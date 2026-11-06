@@ -1,0 +1,12 @@
+buses.airlineflyer.net {
+	encode gzip
+	reverse_proxy 127.0.0.1:8000
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+}
+
+142-93-7-203.sslip.io {
+	redir https://buses.airlineflyer.net{uri} permanent
+}

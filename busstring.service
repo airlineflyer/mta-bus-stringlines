@@ -1,0 +1,25 @@
+# Runs the bus stringline collector and site around the clock, restarting it if it stops.
+[Unit]
+Description=MTA bus stringlines
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=busstring
+Group=busstring
+WorkingDirectory=/opt/busstring
+# The API key lives here, readable only by root; it is never sent to visitors.
+EnvironmentFile=/etc/busstring.env
+ExecStart=/usr/bin/python3 /opt/busstring/busstring.py --keep-days 3
+Restart=always
+RestartSec=10
+
+# Limit what the script can touch on the server.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/busstring
+
+[Install]
+WantedBy=multi-user.target

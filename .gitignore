@@ -1,0 +1,7 @@
+# Collected and generated data: large, and rebuilt from public sources
+*.sqlite
+*.sqlite-*
+gtfs/
+bus_lanes.csv
+__pycache__/
+.DS_Store

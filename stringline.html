@@ -1,0 +1,1034 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MTA bus stringlines</title>
+<style>
+  :root {
+    --bg: #ffffff; --ink: #1d1f22; --muted: #6b7078; --grid: #e6e8eb; --grid-strong: #c9cdd2;
+    --dir0: #0039a6; --dir1: #d4721a; --miss: #c62828; --lane: #2e7d32; --load0: #2e9e44; --load1: #d9a400; --load2: #d32f2f; --prob: #d32f2f; --bunch: #7b1fa2; --btn: #f2f3f5; --btn-on: #1d1f22; --btn-on-ink: #fff;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171a; --ink: #e8eaed; --muted: #9aa0a8; --grid: #26292e; --grid-strong: #3a3e45;
+      --dir0: #6f9bff; --dir1: #ffa552; --miss: #ff6b6b; --lane: #66bb6a; --load0: #5cc96e; --load1: #ffcf3f; --load2: #ff5c5c; --prob: #ef5350; --bunch: #ce93d8; --btn: #23262b; --btn-on: #e8eaed; --btn-on-ink: #15171a;
+      color-scheme: dark;
+    }
+  }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 "Helvetica Neue", Helvetica, Arial, sans-serif; }
+  main { max-width: 1200px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 24px; margin: 0 0 8px; }
+  p { max-width: 75ch; }
+  .muted { color: var(--muted); }
+  #picker summary { cursor: pointer; padding: 6px 0; font-weight: 600; }
+  #picker summary span.muted { font-weight: 400; margin-left: 8px; text-decoration: underline; }
+  #picker[open] summary { margin-bottom: 4px; }
+  .group { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 4px 0; }
+  .group b { width: 110px; font-size: 13px; color: var(--muted); font-weight: 500; }
+  .group button { border: 0; background: var(--btn); color: var(--ink); padding: 4px 8px;
+                  border-radius: 3px; font: 600 13px/1.2 inherit; cursor: pointer; min-width: 44px; }
+  .group button[aria-pressed="true"] { background: var(--btn-on); color: var(--btn-on-ink); }
+  button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--dir0); outline-offset: 2px; }
+  .controls { display: grid; grid-template-columns: 140px minmax(0, 360px) auto; gap: 6px 12px;
+              align-items: center; margin: 20px 0 8px; }
+  .controls input { width: 100%; }
+  .controls .group { margin: 0; }
+  .controls .check { display: inline-flex; gap: 5px; align-items: center; font-size: 14px; margin-right: 14px; }
+  .controls .check input { width: auto; margin: 0; }
+  .controls select { font: inherit; font-size: 13px; max-width: 220px; }
+  .note { font-size: 13px; }
+  #chart { position: relative; overflow-x: auto; margin-top: 12px; }
+  #chart svg { display: block; }
+  #tip { position: fixed; z-index: 20; max-width: min(300px, calc(100vw - 16px)); white-space: normal !important;
+         line-height: 1.4; box-shadow: 0 2px 8px rgba(0,0,0,.25); pointer-events: none; background: var(--bg); border: 1px solid var(--grid-strong);
+         padding: 6px 8px; font-size: 12px; border-radius: 3px; display: none; white-space: nowrap; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; align-items: center; }
+  .legend .mkwrap { display: contents; }
+  .legend .mkwrap::before, .legend .mk::before, .legend .est::before { content: none !important; }
+  .legend .mk i { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px;
+                  border-radius: 50%; background: var(--ink); color: var(--bg); font: 700 9px/1 inherit;
+                  font-style: normal; margin-right: 5px; vertical-align: -3px; }
+  .legend [title] { cursor: help; }
+  details.howto { margin: 8px 0; font-size: 13px; }
+  details.howto summary, .stats details summary { cursor: pointer; color: var(--muted); }
+  details.howto ul { margin: 6px 0 0; padding-left: 20px; max-width: 75ch; color: var(--muted); }
+  details.howto li { margin: 3px 0; }
+  .legend .sched::before { opacity: .45; }
+  .legend .lane::before { height: 10px; background: var(--lane); }
+  .legend .prob::before { height: 10px; background: var(--prob); opacity: .3; }
+  .note.problems { color: var(--ink); }
+  .note.problems p { margin: 8px 0 2px; }
+  .note.problems ul { margin: 2px 0 6px; padding-left: 20px; }
+  .note.problems details summary { cursor: pointer; color: var(--muted); }
+  .legend .effm::before { height: 0 !important; background: none !important; border-top: 2.5px dotted var(--miss); }
+  .legend .bunch::before { height: 6px; background: var(--bunch); opacity: .35; border-radius: 3px; }
+  .legend .ld::before { height: 4px; background: currentColor; }
+  .legend .bw::before { opacity: .38; } .legend .bl::before { opacity: .22; } .legend .sl::before { opacity: .1; }
+  .legend .miss::after { content: none; }
+  .legend .miss::before { background: repeating-linear-gradient(90deg, var(--miss) 0 4px, transparent 4px 7px) !important; }
+  .legend span::before { content: ""; display: inline-block; width: 14px; height: 3px;
+                         margin-right: 6px; vertical-align: middle; background: currentColor; }
+  #status { min-height: 1.5em; }
+  .stats { overflow-x: auto; margin: 12px 0; }
+  .stats table { border-collapse: collapse; font-size: 13px; min-width: 100%; }
+  .stats caption { text-align: left; font-weight: 600; padding-bottom: 6px; font-size: 14px; }
+  .stats th, .stats td { text-align: left; padding: 5px 12px 5px 0; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  .stats thead th { color: var(--muted); font-weight: 500; }
+  .stats tbody th { font-weight: 500; white-space: nowrap; }
+  .stats .worse { color: var(--miss); font-weight: 600; }
+  .stats p { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+  /* Phones: one stat per block, label above its value(s), nothing wider than the screen. */
+  @media (max-width: 600px) {
+    .stats table, .stats caption, .stats tbody, .stats tr, .stats th, .stats td { display: block; width: auto; }
+    .stats table { min-width: 0; }
+    .stats thead { display: none; }
+    .stats tbody tr { padding: 7px 0; border-bottom: 1px solid var(--grid); }
+    .stats th, .stats td { border: 0; padding: 1px 0; }
+    .stats tbody th { white-space: normal; color: var(--muted); font-size: 12px; font-weight: 500; }
+    .stats td { font-size: 14px; }
+    .stats.multi td::before { content: attr(data-label) ": "; color: var(--muted); }
+  }
+  @media (max-width: 600px) {
+    main { padding: 16px 12px 40px; }
+    h1 { font-size: 21px; }
+    .controls { grid-template-columns: 96px minmax(0, 1fr) auto; gap: 8px 8px; }
+    .controls .check { margin-right: 8px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>MTA bus stringlines</h1>
+  <p>Stringlines are a time and distance chart showing the movement of buses along a route over time.
+     They make operational problems easy to see, such as delays, bus bunching and gaps in service.
+     Each bus trip appears as a string moving diagonally across the chart.</p>
+  <p>Click on a route and move the sliders below to adjust the stringline.</p>
+
+  <details id="picker" open>
+    <summary><span id="curRoute">Choose a route</span> <span id="pickerHint" class="muted">Hide routes</span></summary>
+    <div id="routes"><p class="muted">Loading routes…</p></div>
+  </details>
+
+  <div class="controls">
+    <label for="day">End date:</label><input id="day" type="range" min="0" max="3" value="0"><span id="dayOut">Today</span>
+    <label for="tod">End time:</label><input id="tod" type="range" min="0" max="288" value="288"><span id="todOut">Now</span>
+    <span>Direction:</span>
+    <div class="group" id="dirs" role="group" aria-label="Direction">
+      <button data-dir="both" aria-pressed="true">Both</button>
+      <button data-dir="0" aria-pressed="false">Direction 0</button>
+      <button data-dir="1" aria-pressed="false">Direction 1</button>
+    </div><span></span>
+    <span>Show:</span>
+    <div class="group">
+      <label class="check"><input type="checkbox" id="showHw"> Headways</label>
+      <label class="check" id="hwAtWrap" hidden>at <select id="hwAt" aria-label="Measure headways at stop"></select></label>
+      <label class="check"><input type="checkbox" id="showRt"> Run times</label>
+      <label class="check" id="schedWrap" hidden><input type="checkbox" id="showSched" checked> Schedule</label>
+      <label class="check" id="lanesWrap" hidden><input type="checkbox" id="showLanes"> Bus lanes</label>
+      <label class="check"><input type="checkbox" id="showMgmt" checked> Interventions</label>
+      <label class="check"><input type="checkbox" id="showLoad"> Passenger loading</label>
+    </div><span></span>
+    <label for="hrs">Number of hours:</label><input id="hrs" type="range" min="1" max="12" value="1"><span id="hrsOut">1</span>
+  </div>
+  <p><a id="csv" href="#">Click here for a CSV of the raw trip data in this chart.</a></p>
+  <div class="legend"><span id="lg0" style="color:var(--dir0)">Direction 0</span><span id="lg1" style="color:var(--dir1)">Direction 1</span><span id="lgS" class="sched" style="color:var(--muted)" title="Faint lines: trips in the schedule" hidden>Scheduled</span><span id="lgM" class="miss" style="color:var(--miss)" title="Scheduled trips with no bus seen in the live feed, judged only for times the collector was running" hidden>Didn’t run</span><span id="lgBw" class="lane bw" style="color:var(--ink)" hidden>Busway</span><span id="lgBl" class="lane bl" style="color:var(--ink)" hidden>Bus lane</span><span id="lgSl" class="lane sl" style="color:var(--ink)" hidden>Shared lane</span><span id="lgBu" class="bunch" style="color:var(--ink)" title="A bus less than 30% of the usual gap behind the bus ahead; hover over the shading for what happened" hidden>Running bunched</span><span id="lgEff" class="effm" style="color:var(--ink)" title="Scheduled trips that ran, but whose slot fell in a gap between buses of about twice the scheduled interval or more for 5+ stops: riders effectively lost that bus" style="color:var(--miss)" hidden>Effectively missed</span><span id="lgL0" class="ld" style="color:var(--load0)" hidden>Seats available</span><span id="lgL1" class="ld" style="color:var(--load1)" hidden>Standing room only</span><span id="lgL2" class="ld" style="color:var(--load2)" hidden>Full</span><span id="lgMk" class="mkwrap"></span><span id="lgEst" class="est" style="color:var(--muted)" title="Buses often aren’t tracked at the very ends of the line, so run times for trips seen over at least three quarters of the route are scaled up from the part seen" hidden>~ estimated run time</span></div>
+  <details id="howto" class="howto" hidden><summary>How to read this chart</summary><ul id="howtoList"></ul></details>
+  <p id="status" class="muted"></p>
+  <p id="note" class="muted note" hidden></p>
+  <div id="probNote" class="note problems" hidden></div>
+  <div id="stats" class="stats" hidden></div>
+  <div id="chart"><div id="tip"></div></div>
+
+  <h2>How it works</h2>
+  <p>The MTA publishes the Bus Time SIRI feed, which reports every bus’s GPS position along with its
+     distance along the route to the next stop. A Python script polls the feed every 30 seconds for the
+     whole fleet and saves each bus’s distance along its route into a SQLite database. Stop positions are
+     learned from the same feed, so stop labels fill in as buses pass them.</p>
+  <p>To draw the stringlines, positions are fetched from the database and passed through a cleaning step
+     that drops GPS readings where a bus appears to jump backwards and breaks a string at gaps longer than
+     15 minutes. Both directions share one axis: the opposite direction is plotted in reverse so that a
+     place on the route sits at roughly the same height either way.</p>
+  <p class="muted note">Bus data from MTA Bus Time. This site is not affiliated with or endorsed by the MTA.
+     Times are New York time.</p>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const TZ = "America/New_York";
+const GROUPS = [
+  ["Bronx", /^Bx\d/i], ["Brooklyn", /^B\d/i], ["Manhattan", /^M\d/i], ["Queens", /^Q\d/i],
+  ["Staten Island", /^S\d/i], ["Express", /^(BM|BxM|QM|SIM|X)\d/i],
+];
+let route = null, data = null, timer = null, dirSel = "both", drawnRoute = null, lastW = 0;
+let emCache = {};
+let chartGeom = { left: 0, right: 0 };   // plot margins, for turning a pointer position into a time                 // effectively missed, per direction, for the current redraw
+const probsCache = {};            // route -> { at, data, loading }: problem areas load separately
+
+// Problem areas take the server a few seconds per route (they look at every stored day),
+// so they load on their own and the chart doesn't wait. Kept for 25 minutes per route.
+function loadProblems(r) {
+  const c = probsCache[r];
+  if (c && (c.loading || Date.now() - c.at < 25 * 60 * 1000)) return;
+  probsCache[r] = { at: Date.now(), data: c ? c.data : null, loading: true };
+  fetch(`/api/problems?route=${encodeURIComponent(r)}`)
+    .then(x => x.ok ? x.json() : null)
+    .then(js => { probsCache[r] = { at: Date.now(), data: js, loading: false }; if (route === r && data) draw(); })
+    .catch(() => { probsCache[r].loading = false; probsCache[r].at = 0; });
+}
+
+const fmtTime = new Intl.DateTimeFormat("en-US", { timeZone: TZ, hour: "numeric", minute: "2-digit" });
+const fmtDay = new Intl.DateTimeFormat("en-US", { timeZone: TZ, weekday: "short", month: "short", day: "numeric" });
+
+// Dates and times are New York time for every visitor, wherever they are.
+const nyParts = date => Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: TZ, hourCycle: "h23",
+  year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })
+  .formatToParts(date).map(x => [x.type, +x.value || 0]));
+const nyOffset = ms => { const p = nyParts(new Date(ms));
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(ms / 1000) * 1000; };
+function nyMidnight(daysBack) {           // epoch ms of 12:00 AM New York time, daysBack days ago
+  const p = nyParts(new Date()), guess = Date.UTC(p.year, p.month - 1, p.day - daysBack);
+  let t = guess - nyOffset(guess); t = guess - nyOffset(t); return t;
+}
+
+function nyDayStart(ms) {                // 12:00 AM New York time on the day containing ms
+  const p = nyParts(new Date(ms)), guess = Date.UTC(p.year, p.month - 1, p.day);
+  let t = guess - nyOffset(guess); t = guess - nyOffset(t); return t;
+}
+function nyDays(start, end) {             // each New York day touching [start, end] (seconds)
+  const out = []; let t = nyDayStart((start - 86400) * 1000);
+  while (t <= end * 1000) {
+    const p = nyParts(new Date(t + 12 * 3600 * 1000));
+    out.push({ mid: t / 1000, dow: new Date(Date.UTC(p.year, p.month - 1, p.day)).getUTCDay() });
+    t = nyDayStart(t + 30 * 3600 * 1000);
+  }
+  return out;
+}
+function activeSpans(lane, days, start, end) {   // times [a, b] (seconds) when a lane is in effect
+  const ranges = lane.hours === "all" ? [[0, 1440]] : lane.hours.split(",").map(r => r.split("-").map(Number));
+  const spans = [];
+  days.forEach(({ mid, dow }) => {
+    if ((lane.days === 5 && (dow < 1 || dow > 5)) || (lane.days === 6 && dow === 0)) return;
+    ranges.forEach(([a, b]) => { const s = Math.max(start, mid + a * 60), e = Math.min(end, mid + b * 60); if (e > s) spans.push([s, e]); });
+  });
+  return spans;
+}
+
+function endEpoch() {
+  const day = +$("day").value, tod = +$("tod").value;
+  if (day === 0 && tod === 288) return Math.floor(Date.now() / 1000);
+  return Math.floor(nyMidnight(day) / 1000) + tod * 300;
+}
+
+function updateLabels() {
+  const day = +$("day").value, tod = +$("tod").value;
+  const d = new Date(nyMidnight(day) + 12 * 3600 * 1000);
+  $("dayOut").textContent = day === 0 ? "Today" : day === 1 ? "Yesterday" : fmtDay.format(d);
+  $("todOut").textContent = (day === 0 && tod === 288) ? "Now"
+    : fmtTime.format(new Date((endEpoch()) * 1000));
+  $("hrsOut").textContent = $("hrs").value;
+}
+
+async function loadRoutes() {
+  let routes;
+  try {
+    const r = await fetch("/api/routes");
+    if (!r.ok) throw new Error(await r.text());
+    routes = await r.json();
+  } catch (e) {
+    $("picker").open = true;
+    $("routes").innerHTML = '<p class="muted">Couldn’t load routes. Check that busstring.py is still running in Terminal. Trying again in 10 seconds.</p>';
+    console.error(e);
+    setTimeout(loadRoutes, 10000); return;
+  }
+  const box = $("routes"); box.innerHTML = "";
+  if (!routes.length) {
+    $("picker").open = true;
+    box.innerHTML = '<p class="muted">No buses stored yet. Leave busstring.py running; routes appear after the first feed poll (about 30 seconds).</p>';
+    setTimeout(loadRoutes, 30000); return;
+  }
+  const used = new Set();
+  for (const [name, re] of GROUPS) {
+    const rs = routes.filter(r => re.test(r) && !used.has(r));
+    if (!rs.length) continue;
+    rs.forEach(r => used.add(r));
+    const g = document.createElement("div"); g.className = "group";
+    g.innerHTML = `<b>${name}</b>`;
+    rs.forEach(r => g.appendChild(routeButton(r)));
+    box.appendChild(g);
+  }
+  const rest = routes.filter(r => !used.has(r));
+  if (rest.length) {
+    const g = document.createElement("div"); g.className = "group"; g.innerHTML = "<b>Other</b>";
+    rest.forEach(r => g.appendChild(routeButton(r))); box.appendChild(g);
+  }
+  const fromHash = decodeURIComponent(location.hash.slice(1));
+  if (!route) {
+    select(routes.includes(fromHash) ? fromHash : routes[0]);
+    $("picker").open = false;   // start collapsed once a route is showing
+  }
+}
+
+function routeButton(r) {
+  const b = document.createElement("button");
+  b.textContent = r.replace("+", " SBS"); b.dataset.route = r;
+  b.setAttribute("aria-pressed", "false");
+  b.onclick = () => select(r);
+  return b;
+}
+
+function select(r) {
+  route = r;
+  $("curRoute").textContent = "Route " + r.replace("+", " SBS"); location.hash = encodeURIComponent(r);
+  document.querySelectorAll("[data-route]").forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset.route === r)));
+  refresh();
+}
+
+async function refresh() {
+  if (!route) return;
+  updateLabels();
+  const end = endEpoch(), hours = $("hrs").value;
+  const qs = `route=${encodeURIComponent(route)}&end=${end}&hours=${hours}` + ($("showMgmt").checked ? "&mgmt=1" : "");
+  $("csv").href = `/api/csv?${qs}`;
+  $("status").textContent = "Loading…";
+  try {
+    data = await (await fetch(`/api/stringline?${qs}`)).json();
+    draw();
+    loadProblems(route);
+  } catch (e) { $("status").textContent = "Couldn’t load data: " + e.message; }
+  clearTimeout(timer);
+  if (+$("day").value === 0 && +$("tod").value === 288) timer = setTimeout(refresh, 30000);
+}
+
+function draw() {
+  emCache = {};
+  const chart = $("chart"), tip = $("tip");
+  // Keep the old chart on screen until the new one is ready, and remember where the
+  // viewer had scrolled, so refreshes don't make the page jump.
+  const prev = chart.querySelector("svg"), keepX = chart.scrollLeft, sameRoute = drawnRoute === route;
+  const s0 = data.stops["0"], s1 = data.stops["1"];
+  const L0 = s0.length ? s0[s0.length - 1].dist : 0, L1 = s1.length ? s1[s1.length - 1].dist : 0;
+  // Pick axis direction: direction 0 when we know its stops, otherwise direction 1.
+  const one = dirSel !== "both";
+  const axisDir = one ? +dirSel : (L0 ? 0 : 1), axisStops = axisDir === 0 ? s0 : s1;
+  const trips = one ? data.trips.filter(t => t.dir === axisDir) : data.trips;
+  const lenOf = d => (d === 0 ? L0 : L1) || Math.max(1, ...data.trips.filter(t => t.dir === d).flatMap(t => t.pts.map(p => p[1])));
+  const pos = (dir, dist) => { const p = Math.min(1, Math.max(0, dist / lenOf(dir))); return dir === axisDir ? p : 1 - p; };
+
+  const dests = d => [...new Set(data.trips.filter(t => t.dir === d).map(t => t.dest))].slice(0, 2).join(" / ");
+  $("lg0").textContent = "Direction 0" + (dests(0) ? ` to ${dests(0)}` : "");
+  $("lg1").textContent = "Direction 1" + (dests(1) ? ` to ${dests(1)}` : "");
+  $("lg0").hidden = one && axisDir !== 0; $("lg1").hidden = one && axisDir !== 1;
+  document.querySelectorAll("[data-dir]").forEach(b => {
+    if (b.dataset.dir !== "both") { const d = +b.dataset.dir; b.textContent = dests(d) ? `To ${dests(d)}` : `Direction ${d}`; }
+  });
+  const n = trips.length;
+  $("status").textContent = n ? `${n} trip strings on the ${route.replace("+", " SBS")}` :
+    "No buses recorded for this route in this window. The collector must be running during the hours you chart.";
+
+  const otherStops = one ? [] : (axisDir === 0 ? s1 : s0), otherDir = 1 - axisDir;
+  // Phone layout: narrow stop labels on the left only, and the chart fits the screen
+  // (about 100 px per hour, so longer windows still scroll sideways).
+  const narrow = chart.clientWidth < 700, showOther = otherStops.length > 0 && !narrow;
+  const left = narrow ? 92 : 190, right = showOther ? 190 : (narrow ? 10 : 16), top = 12, bottom = 34;
+  const W = narrow ? Math.max(chart.clientWidth, left + right + (data.end - data.start) / 3600 * 100)
+                   : Math.max(chart.clientWidth, 760);
+  const rowH = narrow ? 13 : 16, fs = narrow ? 9 : 11, maxName = narrow ? 16 : 30;
+  const H = Math.max(narrow ? 360 : 480,
+    Math.min(3200, Math.max(axisStops.length, showOther ? otherStops.length : 0) * rowH + top + bottom));
+  const x = t => left + (t - data.start) / (data.end - data.start) * (W - left - right);
+  chartGeom = { left, right };
+  const y = p => top + p * (H - top - bottom);
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("width", W); svg.setAttribute("height", H);
+  svg.setAttribute("role", "img"); svg.setAttribute("aria-label", `Stringline chart for route ${route}`);
+  const el = (tag, attrs, parent = svg) => { const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]); parent.appendChild(e); return e; };
+
+  // Stops: faint line for each, label where there is room.
+  // Left side: the axis direction's stops. Right side: the other direction's, flipped.
+  const label = (stops, dir, side) => {
+    let last = -1e9, street = null;
+    const ordered = stops.map(s => ({ name: s.name, yy: y(pos(dir, s.dist)) })).sort((a, b) => a.yy - b.yy);
+    ordered.forEach(s => {
+      if (side === "left") el("line", { x1: left, x2: W - right, y1: s.yy, y2: s.yy, stroke: "var(--grid)" });
+      if (s.yy - last < fs) return;
+      const t = el("text", { x: side === "left" ? left - 6 : W - right + 6, y: s.yy + 4,
+        "text-anchor": side === "left" ? "end" : "start", "font-size": fs,
+        fill: dir === 0 ? "var(--dir0)" : "var(--dir1)" });
+      // "DE KALB AV/IRVING AV" right after another DE KALB AV stop shows just "IRVING AV":
+      // the street is named once, at the first stop of each run along it.
+      const cut = s.name.indexOf("/");
+      const onStreet = cut > 0 ? s.name.slice(0, cut).trim() : null;
+      let shown = s.name;
+      if (onStreet && onStreet === street) shown = s.name.slice(cut + 1).trim();
+      street = onStreet;
+      t.textContent = shown.length > maxName ? shown.slice(0, maxName - 1) + "…" : shown; last = s.yy;
+      const tt = document.createElementNS(NS, "title"); tt.textContent = s.name; t.appendChild(tt);
+    });
+  };
+  label(axisStops, axisDir, "left");
+  if (showOther) label(otherStops, otherDir, "right");
+  if (!axisStops.length) {
+    const t = el("text", { x: left - 6, y: top + 12, "text-anchor": "end", "font-size": 11, fill: "var(--muted)" });
+    t.textContent = "Stops appear as buses pass them";
+  }
+
+  // Time gridlines: every 15 min, labeled every 30 or 60.
+  // Label times as often as fits: at least 70 px apart.
+  const span = data.end - data.start, pxPerSec = (W - left - right) / span;
+  const step = [900, 1800, 3600, 7200, 10800, 21600].find(st => st * pxPerSec >= 70) || 21600;
+  for (let t = Math.ceil(data.start / 900) * 900; t <= data.end; t += 900) {
+    const strong = t % step === 0;
+    el("line", { x1: x(t), x2: x(t), y1: top, y2: H - bottom, stroke: strong ? "var(--grid-strong)" : "var(--grid)" });
+    if (strong) { const lab = el("text", { x: x(t), y: H - bottom + 18, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)" });
+      lab.textContent = fmtTime.format(new Date(t * 1000)); }
+  }
+
+  // Bus lanes: shaded bands, only while each lane is in effect (one direction at a time).
+  $("lanesWrap").hidden = !data.lanes;
+  const wantLanes = !!data.lanes && $("showLanes").checked, showLanes = wantLanes && one;
+  ["lgBw", "lgBl", "lgSl"].forEach(id => $(id).hidden = !showLanes);
+  let laneNote = wantLanes && !one ? "Choose a single direction to see its bus lanes." : "";
+  if (showLanes) {
+    const ivs = data.lanes[String(axisDir)] || [];
+    const days = nyDays(data.start, data.end);
+    const OPACITY = { busway: 0.38, lane: 0.22, shared: 0.1 };
+    const gl = el("g", { fill: "var(--lane)" });
+    const active = ivs.map(iv => activeSpans(iv, days, data.start, data.end));
+    ivs.forEach((iv, k) => {
+      const y0 = y(pos(axisDir, iv.d0)), y1 = y(pos(axisDir, iv.d1));
+      active[k].forEach(([a, b]) => el("rect", { x: x(a), y: Math.min(y0, y1), width: Math.max(0.5, x(b) - x(a)),
+        height: Math.max(1.5, Math.abs(y1 - y0)), opacity: OPACITY[iv.kind] || 0.2 }, gl));
+    });
+    // Share of the route with any lane, and bus speeds inside vs outside active lanes.
+    const L = lenOf(axisDir), merged = [];
+    ivs.map(iv => [Math.max(0, iv.d0), Math.min(L, iv.d1)]).filter(([a, b]) => b > a).sort((a, b) => a[0] - b[0])
+      .forEach(([a, b]) => { const m = merged[merged.length - 1]; if (m && a <= m[1]) m[1] = Math.max(m[1], b); else merged.push([a, b]); });
+    const covered = merged.reduce((sum, [a, b]) => sum + b - a, 0);
+    const kindAt = (dist, t) => { let k = null;
+      ivs.forEach((iv, i) => { if (dist >= iv.d0 && dist <= iv.d1 && active[i].some(([a, b]) => t >= a && t <= b))
+        if (k !== "busway" && k !== "lane") k = iv.kind; });
+      return k; };
+    const first = axisStops.length ? axisStops[0].dist : 0, last = axisStops.length ? axisStops[axisStops.length - 1].dist : L;
+    const acc = { in: [0, 0], out: [0, 0] };
+    trips.forEach(tr => tr.pts.forEach((p, i) => {
+      if (!i) return;
+      const q = tr.pts[i - 1], dt = p[0] - q[0], dd = p[1] - q[1], md = (p[1] + q[1]) / 2;
+      if (dt <= 0 || dt > 300 || md < first + 100 || md > last - 100) return;   // skip gaps and terminal layovers
+      const k = kindAt(md, (p[0] + q[0]) / 2);
+      const bucket = k === "busway" || k === "lane" ? acc.in : k === null ? acc.out : null;
+      if (bucket) { bucket[0] += dd; bucket[1] += dt; }
+    }));
+    const mph = ([d, t]) => (d / t * 2.23694).toFixed(1);
+    laneNote = ivs.length ? `Bus lanes cover ${Math.round(covered / L * 100)}% of this direction; shading shows only the hours each lane is in effect.` :
+      "No bus lanes found along this direction of the route.";
+    if (acc.in[1] >= 600 && acc.out[1] >= 600)
+      laneNote += ` Average bus speed in this window: ${mph(acc.in)} mph in active bus lanes and busways, ${mph(acc.out)} mph with no lane (shared lanes excluded).`;
+  }
+
+  // Problem areas: always on, as a written summary (no shading on the chart). In Both
+  // view, each direction gets its own list.
+  const pc = probsCache[route], probs = (pc && pc.data) || null;
+  const probBox = $("probNote");
+  probBox.hidden = !probs; probBox.innerHTML = "";
+  if (!probs && pc && pc.loading) { probBox.hidden = false; probBox.innerHTML = '<p class="muted">Analyzing problem areas…</p>'; }
+  if (probs) {
+    const dayTxt = probs.days === 1 ? "1 day" : `${probs.days} days`;
+    const head = document.createElement("p");
+    head.innerHTML = `<b>Problem areas</b>, from the last ${dayTxt} of data (weekdays and weekends combined), worst first:`;
+    probBox.appendChild(head);
+    (one ? [axisDir] : [0, 1]).forEach(d => {
+      const list = probs[String(d)] || [];
+      if (!one) {
+        const h = document.createElement("p");
+        h.innerHTML = `<b>${dests(d) ? "To " + dests(d) : "Direction " + d}</b>`;
+        probBox.appendChild(h);
+      }
+      if (!list.length) {
+        const p = document.createElement("p");
+        p.textContent = "No consistent problem areas found.";
+        probBox.appendChild(p);
+        return;
+      }
+      const ul = document.createElement("ul");
+      list.slice(0, 5).forEach(f => { const li = document.createElement("li"); li.textContent = f.text; ul.appendChild(li); });
+      probBox.appendChild(ul);
+      if (list.length > 5) {                     // the rest, collapsed
+        const more = document.createElement("details");
+        more.innerHTML = `<summary>${list.length - 5} more</summary>`;
+        const ul2 = document.createElement("ul");
+        list.slice(5).forEach(f => { const li = document.createElement("li"); li.textContent = f.text; ul2.appendChild(li); });
+        more.appendChild(ul2);
+        probBox.appendChild(more);
+      }
+    });
+  }
+
+  const shown = one ? [axisDir] : [0, 1];
+
+  // Schedule: faint lines for scheduled trips; dashed red for ones no bus ran.
+  $("schedWrap").hidden = !data.has_schedule;
+  const showSched = data.has_schedule && $("showSched").checked;
+  $("lgS").hidden = $("lgM").hidden = !showSched;
+  let missing = 0, judged = 0;
+  if (showSched) {
+    const clipId = "plotclip";
+    const cp = el("clipPath", { id: clipId });
+    el("rect", { x: left, y: top, width: W - left - right, height: H - top - bottom }, cp);
+    const gs = el("g", { fill: "none", "clip-path": `url(#${clipId})` });
+    data.sched.filter(st => shown.includes(st.dir)).forEach(st => {
+      if (st.ran !== null && st.end <= data.end) { judged++; if (!st.ran) missing++; }
+      const d = st.pts.map((p, i) => (i ? "L" : "M") + x(p[0]).toFixed(1) + "," + y(pos(st.dir, p[1])).toFixed(1)).join("");
+      const isMissing = st.ran === false;
+      const line = el("path", isMissing
+        ? { d, stroke: "var(--miss)", "stroke-width": 1.6, "stroke-dasharray": "5 4" }
+        : { d, stroke: st.dir === 0 ? "var(--dir0)" : "var(--dir1)", "stroke-width": 1, opacity: 0.3 }, gs);
+      const hit = el("path", { d, stroke: "transparent", "stroke-width": 8, style: "pointer-events:stroke" }, gs);
+      let status = st.ran === true ? "Ran" : st.ran === false ? "No bus seen" : "Not judged yet";
+      if (st.ran === false) {
+        const ef = effFor(st), mm = sec => Math.round(Math.abs(sec) / 60);
+        if (ef.covered) {
+          const c = ef.covered;
+          const what = c.own_start ? `running the ${fmtTime.format(new Date(c.own_start * 1000))} trip` +
+            (c.own_late != null ? (mm(c.own_late) ? ` ${mm(c.own_late)} min ${c.own_late > 0 ? "late" : "early"}` : " on time") : "")
+            : "running a trip that isn’t in the schedule";
+          status = `No bus ran this trip, but its slot was covered: bus ${c.bus}, ${what}, passed ${c.stop} ` +
+            (mm(c.off) ? `${mm(c.off)} min ${c.off > 0 ? "after" : "before"} this trip was due.` : "right when this trip was due.");
+        } else if (ef.missed) {
+          status = `No bus seen. Riders from ${ef.missed.from} to ${ef.missed.to} waited up to ` +
+            `${Math.round(ef.missed.gap / 60)} min between buses (scheduled every ${Math.round(ef.missed.hw / 60)} min).`;
+        }
+      }
+      if (st.ran === true && st.bus) {
+        const word = sec => { const m = Math.round(sec / 60); return m === 0 ? "on time" : m > 0 ? `${m} min late` : `${-m} min early`; };
+        const parts = [st.late0 != null && `started ${word(st.late0)}`, st.late1 != null && `finished ${word(st.late1)}`].filter(Boolean);
+        const outside = st.act1 < data.start ? " (before this time window)" : st.act0 > data.end ? " (after this time window)" : "";
+        status = `Ran by bus ${st.bus}, ${fmtTime.format(new Date(st.act0 * 1000))}–${fmtTime.format(new Date(st.act1 * 1000))}` +
+          outside + (parts.length ? `: ${parts.join(", ")}` : "");
+      }
+      hit.addEventListener("mousemove", ev => {
+        moveTip(ev, `Scheduled ${fmtTime.format(new Date(st.start * 1000))} trip to ${st.dest || "?"}<br>${status}`, true);
+      });
+      hit.addEventListener("mouseleave", hideTipNow);
+    });
+    if (judged) $("status").textContent += `. ${missing} of ${judged} scheduled trips didn’t run`;
+  }
+
+  // Interventions, part 1: purple shading along a bus's string while it ran bunched
+  // behind the bus ahead; the shading ends where the outcome happened.
+  const mg = $("showMgmt").checked && data.mgmt ? data.mgmt : null;
+  $("lgBu").hidden = !mg;
+  const showTip = (ev, text) => moveTip(ev, text);
+  const hideTip = hideTipNow;
+  if (mg) {
+    const gb = el("g", { fill: "none", stroke: "var(--bunch)", "stroke-width": 7, "stroke-linecap": "round",
+                         "stroke-linejoin": "round", opacity: 0.3 });
+    shown.forEach(d => ((mg[String(d)] || {}).events || []).forEach(e => {
+      trips.filter(t => t.dir === d && t.trip === e.trip && t.vehicle === e.vehicle).forEach(t => {
+        const seg = t.pts.filter(p => p[0] >= e.t0 - 15 && p[0] <= e.t1 + 15);
+        if (seg.length < 2) return;
+        const path = el("path", { d: seg.map((p, i) => (i ? "L" : "M") + x(p[0]).toFixed(1) + "," + y(pos(d, p[1])).toFixed(1)).join(""),
+                                  style: "pointer-events:stroke" }, gb);
+        path.addEventListener("mousemove", ev => showTip(ev, e.text));
+        path.addEventListener("mouseleave", hideTip);
+      });
+    }));
+  }
+
+  // Strings. With Passenger loading on, each stretch of a bus's line takes the color of its
+  // load at the time (green seats, yellow standing room, red full); no data keeps the usual color.
+  const showLoad = $("showLoad").checked;
+  const anyLoad = trips.some(t => t.occ);
+  ["lgL0", "lgL1", "lgL2"].forEach(id => $(id).hidden = !(showLoad && anyLoad));
+  const g = el("g", { fill: "none", "stroke-width": 1.6, "stroke-linejoin": "round" });
+  trips.forEach(tr => {
+    const pt = p => x(p[0]).toFixed(1) + "," + y(pos(tr.dir, p[1])).toFixed(1);
+    const d = tr.pts.map((p, i) => (i ? "L" : "M") + pt(p)).join("");
+    const base = tr.dir === 0 ? "var(--dir0)" : "var(--dir1)";
+    const path = el("path", { d, stroke: base }, g);
+    if (showLoad && tr.occ) {
+      // Lay colored pieces over the line, one per run of the same load level.
+      let i = 0;
+      while (i < tr.pts.length - 1) {
+        const lvl = tr.occ[i];
+        let j = i + 1;
+        while (j < tr.pts.length - 1 && tr.occ[j] === lvl) j++;
+        if (lvl !== null && lvl !== undefined)
+          el("path", { d: tr.pts.slice(i, j + 1).map((p, n) => (n ? "L" : "M") + pt(p)).join(""),
+                       stroke: `var(--load${lvl})`, "stroke-width": 2.4, "stroke-linecap": "round" }, g);
+        i = j;
+      }
+    }
+    const hit = el("path", { d, stroke: "transparent", "stroke-width": 8, style: "pointer-events:stroke" }, g);
+    hit.addEventListener("mousemove", ev => {
+      path.setAttribute("stroke-width", 3.5);
+      moveTip(ev, `Bus ${tr.vehicle} to ${tr.dest || "?"}<br>${fmtTime.format(new Date(tr.pts[0][0] * 1000))}–` +
+        `${fmtTime.format(new Date(tr.pts[tr.pts.length - 1][0] * 1000))}${scheduleLine(tr)}${loadLine(tr, ev, hit)}<br><span class="muted">${tr.trip}</span>`, true);
+    });
+    hit.addEventListener("mouseleave", () => { path.setAttribute("stroke-width", 1.6); hideTipNow(); });
+  });
+  // Interventions, part 2: lettered markers on top of the strings, and a legend chip
+  // for each kind actually on the chart.
+  const MARKS = {
+    hold: ["H", "Hold", "Waited 2+ minutes at a stop while the route kept moving, to space out from the bus ahead, even out gaps, or because it was running early"],
+    short: ["T", "Turned short", "Turned back before the end of the line, then ran the other direction"],
+    express: ["E", "Express / drop-off only", "Ran much faster than usual over several stops"],
+    sign: ["S", "Sign change", "Changed its sign mid-trip, e.g. to DROP OFF ONLY"],
+    pass: ["P", "Pass (planned or not)", "One bus clearly overtook another. Sometimes a dispatcher’s move to put the emptier bus in front, often just traffic, so it isn’t counted as an intervention"],
+    extra: ["+", "Unscheduled trip", "A trip that isn’t in the schedule, possibly added to fill a gap"],
+  };
+  const drawnKinds = new Set();
+  if (mg) shown.forEach(d => ((mg[String(d)] || {}).markers || []).forEach(m => drawnKinds.add(m.type)));
+  $("lgMk").innerHTML = Object.keys(MARKS).filter(k => drawnKinds.has(k))
+    .map(k => `<span class="mk" title="${MARKS[k][2]}. Inferred from bus movements; hover over a marker for details."><i>${MARKS[k][0]}</i>${MARKS[k][1]}</span>`).join("");
+  if (mg) {
+    const LETTER = { hold: "H", short: "T", express: "E", pass: "P", extra: "+", sign: "S" };
+    const gm = el("g", {}), placed = [];
+    shown.forEach(d => ((mg[String(d)] || {}).markers || []).forEach(m => {
+      let cx = x(m.t);
+      const cy = y(pos(d, m.dist)), x0 = cx;
+      while (placed.some(([px, py]) => Math.abs(px - cx) < 14 && Math.abs(py - cy) < 14)) cx += 15;  // don't stack
+      placed.push([cx, cy]);
+      if (cx !== x0) el("line", { x1: x0, y1: cy, x2: cx, y2: cy, stroke: "var(--ink)", "stroke-width": 1 }, gm);
+      if (m.type === "express" && m.t1)
+        el("line", { x1: x0, y1: cy, x2: x(m.t1), y2: y(pos(d, m.dist1)), stroke: "var(--ink)",
+                     "stroke-width": 3, "stroke-dasharray": "2 3", opacity: 0.55 }, gm);
+      const grp = el("g", {}, gm);
+      el("circle", { cx, cy, r: 7, fill: "var(--ink)", stroke: "var(--bg)", "stroke-width": 1.5 }, grp);
+      const t = el("text", { x: cx, y: cy + 3.2, "text-anchor": "middle", "font-size": 9, "font-weight": 700,
+                             fill: "var(--bg)" }, grp);
+      t.textContent = LETTER[m.type] || "?";
+      grp.addEventListener("mousemove", ev => showTip(ev, m.text));
+      grp.addEventListener("mouseleave", hideTip);
+    }));
+  }
+
+  // Reference stop for headways: keep the user's choice while the stop list stays the same.
+  const sel = $("hwAt"), sig = route + "|" + axisDir + "|" + axisStops.length;
+  if (sel.dataset.sig !== sig) {
+    const keep = sel.value && sel.selectedOptions[0] ? sel.selectedOptions[0].textContent : null;
+    sel.innerHTML = "";
+    axisStops.forEach((st, i) => { const o = document.createElement("option");
+      o.value = i; o.textContent = st.name; sel.appendChild(o); });
+    const idx = axisStops.findIndex(st => st.name === keep);
+    sel.value = idx >= 0 ? idx : Math.floor(axisStops.length / 2);
+    sel.dataset.sig = sig;
+  }
+  const showHw = $("showHw").checked, showRt = $("showRt").checked;
+  $("hwAtWrap").hidden = false;
+  const ann = el("g", { "font-size": 10, "font-weight": 600, stroke: "var(--bg)", "stroke-width": 3,
+                        "paint-order": "stroke", "stroke-linejoin": "round" });
+  const tag = (xx, yy, text, dir, anchor = "middle") => {
+    const t = el("text", { x: xx, y: yy, "text-anchor": anchor, fill: dir === 0 ? "var(--dir0)" : "var(--dir1)" }, ann);
+    t.textContent = text;
+  };
+  const mins = sec => Math.round(sec / 60) + " min";
+  // Notes in view are only about this data; general explanations go in the collapsed how-to.
+  const notes = [], howto = [];
+  if (laneNote) notes.push(laneNote);
+  if ($("showLoad").checked && !trips.some(t => t.occ))
+    notes.push("No buses on this route reported passenger loads in this time window.");
+  if (showSched && data.sched_note) notes.push(data.sched_note);
+  if (showSched) howto.push("Faint lines are scheduled trips; dashed red ones had no bus in the live feed.");
+  if (showLanes) howto.push("Green bands are bus lanes, darkest for busways, shown only while each lane is in effect.");
+  if (mg) howto.push("Purple shading follows a bus while it runs bunched behind the one ahead. Lettered markers are " +
+    "interventions inferred from bus movements, not confirmed actions; hover over either for details.");
+
+  if (showHw) {
+    // Axis position of the chosen stop, then the matching distance in each direction.
+    const st = axisStops[+sel.value];
+    const pRef = st ? st.dist / lenOf(axisDir) : 0.5;
+    const yRef = y(pRef);
+    el("line", { x1: left, x2: W - right, y1: yRef, y2: yRef, stroke: "var(--muted)",
+                 "stroke-dasharray": "4 4" }, ann);
+    shown.forEach(d => {
+      const refDist = (d === axisDir ? pRef : 1 - pRef) * lenOf(d);
+      const times = trips.filter(tr => tr.dir === d)
+        .map(tr => crossing(tr.pts, refDist)).filter(t => t !== null).sort((a, b) => a - b);
+      for (let i = 1; i < times.length; i++) {
+        const hw = times[i] - times[i - 1];
+        if (hw > 3 * 3600) continue;               // collector was off; not a real headway
+        // Centered between the two buses' crossings of the dashed line.
+        tag(x((times[i] + times[i - 1]) / 2), d === axisDir ? yRef - 5 : yRef + 13, mins(hw), d);
+      }
+    });
+    howto.push(`Headway labels are the minutes since the previous bus passed ${st ? st.name : "the dashed line"}.`);
+  }
+
+  let anyEstimate = false;
+  if (showRt) {
+    shown.forEach(d => {
+      const stops = d === 0 ? s0 : s1, L = lenOf(d);
+      const first = stops.length ? stops[0].dist : 0, last = stops.length ? stops[stops.length - 1].dist : L;
+      trips.filter(tr => tr.dir === d).forEach(tr => {
+        const r = observedRun(tr.pts, first, last);
+        if (!r || r.covered < 0.75 * (last - first)) return;      // seen over too little of the route
+        const yy = y(pos(d, r.endDist));
+        if (!r.complete) anyEstimate = true;
+        tag(x(r.end) + 3, yy > (top + H - bottom) / 2 ? yy - 5 : yy + 13,
+            (r.complete ? "" : "~") + mins(r.complete ? r.time : r.time * (last - first) / r.covered), d, "start");
+      });
+    });
+    howto.push("Run time labels show each trip’s time from first stop to last.");
+  }
+  // Effectively missed trips: like dropped ones, drawn on the scheduled trip itself, as a
+  // dotted red line: the trip whose slot riders saw as a long, empty wait.
+  let effDrawn = 0;
+  if (showSched) {
+    const ge = el("g", { fill: "none", "clip-path": "url(#plotclip)" });
+    shown.forEach(d => {
+      const stops = d === 0 ? s0 : s1;
+      const em = emCache[d] = effectivelyMissed(d);
+      if (!em) return;
+      em.missed.filter(m => !m.dropped).forEach(m => {
+        effDrawn++;
+        const st = m.st;
+        const dPath = st.pts.map((p, i) => (i ? "L" : "M") + x(p[0]).toFixed(1) + "," + y(pos(d, p[1])).toFixed(1)).join("");
+        el("path", { d: dPath, stroke: "var(--miss)", "stroke-width": 2, "stroke-dasharray": "1.5 4",
+                     "stroke-linecap": "round" }, ge);
+        const hitPath = el("path", { d: dPath, stroke: "transparent", "stroke-width": 8, style: "pointer-events:stroke" }, ge);
+        const where = m.from === m.to ? `at ${m.from}` : `from ${m.from} to ${m.to}`;
+        let txt = `Scheduled ${fmtTime.format(new Date(st.start * 1000))} trip: effectively missed. Riders ${where} ` +
+          `waited up to ${Math.round(m.gap / 60)} min between buses (scheduled every ${Math.round(m.hw / 60)} min), ` +
+          `with no bus in this trip’s slot.`;
+        if (st.bus) txt += ` Its bus, ${st.bus}, ran ${fmtTime.format(new Date(st.act0 * 1000))}–` +
+          `${fmtTime.format(new Date(st.act1 * 1000))}` + (st.late0 != null && st.late0 > 60 ? `, ${Math.round(st.late0 / 60)} min late` : "") + ".";
+        hitPath.addEventListener("mousemove", ev => moveTip(ev, txt));
+        hitPath.addEventListener("mouseleave", hideTipNow);
+      });
+    });
+    if (effDrawn) howto.push("Dotted red lines are effectively missed trips: riders waited about twice the scheduled time or more between buses, with no bus in that trip’s slot, for at least 5 stops.");
+  }
+  $("lgEff").hidden = !effDrawn;
+  $("lgEst").hidden = !anyEstimate;
+  $("note").textContent = notes.join(" "); $("note").hidden = !notes.length;
+  $("howtoList").innerHTML = howto.map(t => `<li>${t}</li>`).join("");
+  $("howto").hidden = !howto.length;
+  renderStats(shown, axisStops, axisDir, lenOf, s0, s1, trips, dests);
+  if (prev) chart.replaceChild(svg, prev); else chart.insertBefore(svg, tip);
+  // Same route: stay where the viewer was. New route: start at the most recent time.
+  chart.scrollLeft = sameRoute ? keepX : chart.scrollWidth;
+  drawnRoute = route; lastW = chart.clientWidth;
+}
+
+// Vital stats for the route over the selected window, scheduled vs actual.
+function renderStats(shown, axisStops, axisDir, lenOf, s0, s1, trips, dests) {
+  const box = $("stats");
+  const sel = $("hwAt"), st = axisStops[+sel.value] || axisStops[Math.floor(axisStops.length / 2)];
+  if (!st) { box.hidden = true; return; }
+  const pRef = st.dist / lenOf(axisDir), hrs = (data.end - data.start) / 3600;
+  const hasSched = data.has_schedule && data.sched.length > 0;
+  const m = sec => Math.round(sec / 60) + " min";
+  const median = v => { const a = [...v].sort((p, q) => p - q), n = a.length; return n ? (n % 2 ? a[(n - 1) / 2] : (a[n / 2 - 1] + a[n / 2]) / 2) : null; };
+  const strip = id => id.includes("_") ? id.slice(id.indexOf("_") + 1) : id;
+  const cols = shown.map(d => {
+    const refDist = (d === axisDir ? pRef : 1 - pRef) * lenOf(d);
+    const inWin = t => t !== null && t >= data.start && t <= data.end;
+    const actual = trips.filter(t => t.dir === d).map(t => crossing(t.pts, refDist)).filter(inWin).sort((a, b) => a - b);
+    const sched = hasSched ? data.sched.filter(t => t.dir === d).map(t => crossing(t.pts, refDist)).filter(inWin).sort((a, b) => a - b) : [];
+    const gaps = arr => arr.slice(1).map((t, i) => t - arr[i]).filter(g => g < 3 * 3600);
+    const ga = gaps(actual), gs = gaps(sched);
+
+    // Run time: actual vs scheduled over the stretch each matched trip was seen on.
+    const stops = d === 0 ? s0 : s1, first = stops.length ? stops[0].dist : 0;
+    const last = stops.length ? stops[stops.length - 1].dist : lenOf(d);
+    const byId = {}; if (hasSched) data.sched.forEach(t => { byId[t.trip] = t; });
+    let sumA = 0, sumS = 0, n = 0;
+    const est = [];
+    trips.filter(t => t.dir === d).forEach(t => {
+      const r = observedRun(t.pts, first, last);
+      if (!r || r.covered < 0.4 * (last - first)) return;
+      if (r.covered >= 0.75 * (last - first)) est.push(r.time * (last - first) / r.covered);
+      const s = byId[t.trip] || byId[strip(t.trip)];
+      if (!s) return;
+      const sa = crossing(s.pts, r.startDist), sb = crossing(s.pts, r.endDist);
+      if (sa === null || sb === null || sb <= sa) return;
+      sumA += r.time; sumS += sb - sa; n++;
+    });
+    const schedFull = median(data.sched.filter(t => t.dir === d && t.end >= data.start && t.start <= data.end).map(t => t.end - t.start));
+    let run = "—";
+    if (schedFull && n >= 2) {
+      const ratio = sumA / sumS, pct = Math.round((ratio - 1) * 100);
+      run = `${m(schedFull)} scheduled, about ${m(schedFull * ratio)} actual ` +
+            `<span class="${pct >= 10 ? "worse" : ""}">(${pct >= 0 ? "+" : ""}${pct}%)</span>, from ${n} trips`;
+    } else if (est.length >= 2) {
+      run = `about ${m(median(est))} actual` + (schedFull ? `, ${m(schedFull)} scheduled` : "") + ` (${est.length} trips)`;
+    } else if (schedFull) run = `${m(schedFull)} scheduled; too few trips seen to compare`;
+
+    const pair = (sv, av, worse) => hasSched
+      ? `${sv} scheduled, <span class="${worse ? "worse" : ""}">${av} actual</span>` : `${av} actual`;
+    const bphS = sched.length / hrs, bphA = actual.length / hrs;
+    const mS = median(gs), mA = median(ga), xS = gs.length ? Math.max(...gs) : null, xA = ga.length ? Math.max(...ga) : null;
+    const dr = data.dropped24 && data.dropped24[String(d)];
+    let dropped = "—", effDropped = "—";
+    if (dr) {
+      const judged = dr.ran + dr.dropped;
+      dropped = judged ? `<span class="${dr.dropped / judged >= 0.05 ? "worse" : ""}">${dr.dropped} of ${judged}</span> (${Math.round(dr.dropped / judged * 100)}%)` +
+        (dr.unknown ? `; ${dr.unknown} not judged` : "") : (dr.unknown ? `${dr.unknown} trips not judged yet` : "no trips scheduled");
+      if (judged && dr.effective !== null && dr.effective !== undefined)
+        effDropped = `<span class="${dr.effective / judged >= 0.05 ? "worse" : ""}">${dr.effective} of ${judged}</span> ` +
+          `(${Math.round(dr.effective / judged * 100)}%)`;
+    }
+    // Effectively missed: dropped trips plus buses that came bunched right behind another.
+    // Crowding: share of bus time (from buses reporting a load) at standing room only or full.
+    let crowd = "—";
+    {
+      let known = 0, crowded = 0, reporting = 0;
+      const ofDir = trips.filter(t => t.dir === d);
+      ofDir.forEach(t => {
+        if (!t.occ) return;
+        reporting++;
+        for (let i = 0; i < t.pts.length - 1; i++) {
+          const lvl = t.occ[i], a = Math.max(t.pts[i][0], data.start), b = Math.min(t.pts[i + 1][0], data.end);
+          const dt = Math.min(300, b - a);
+          if (lvl === null || lvl === undefined || dt <= 0) continue;
+          known += dt; if (lvl >= 1) crowded += dt;
+        }
+      });
+      if (known >= 300) {
+        const pct = Math.round(crowded / known * 100);
+        crowd = `<span class="${pct >= 25 ? "worse" : ""}">${pct}% of bus time</span>, from ${reporting} of ${ofDir.length} buses reporting loads`;
+      }
+    }
+    let eff = "—";
+    const em = !hasSched ? null : (d in emCache ? emCache[d] : effectivelyMissed(d));
+    if (em && em.scheduled) {
+      const total = em.missed.length, pct = Math.round(total / em.scheduled * 100);
+      const noBus = em.missed.filter(m => m.dropped).length, ranOff = total - noBus;
+      const coveredN = em.dropped.filter(t => em.covered.some(c => c.trip === t.trip)).length;
+      eff = `<span class="${pct >= 10 ? "worse" : ""}">${total} of ${em.scheduled} scheduled trips on the chart (${pct}%)</span>` +
+        (total ? `: ${noBus} with no bus, ${ranOff} ran so far off schedule riders were left with a double-length wait` : "") +
+        (em.dropped.length ? `. Dropped trip IDs: ${em.dropped.length}` +
+          (coveredN ? `, ${coveredN} covered by another bus` : "") : "");
+    }
+    const mgd = data.mgmt && data.mgmt[String(d)];
+    const ms = mgd && mgd.stats, dep = mgd && mgd.departures;
+    const mm = sec => (sec / 60).toFixed(1) + " min";
+    let bunch = "—", recover = "—", response = "—", actions = "—", deps = "—", attempts = "—";
+    if (ms) {
+      bunch = !ms.events ? "none" : `${ms.events}: <span class="${ms.judged && ms.resolved / ms.judged < 0.5 ? "worse" : ""}">` +
+        `${ms.resolved} spaced out again${ms.judged ? ` (${Math.round(ms.resolved / ms.judged * 100)}%)` : ""}</span>` +
+        `, ${ms.persisted} still bunched at the end` + (ms.passed ? `, ${ms.passed} ended in a pass` : "") +
+        (ms.events > ms.judged ? `; ${ms.events - ms.judged} unclear` : "");
+      if (ms.recover_dist !== null) recover = `${(ms.recover_dist / 1609.34).toFixed(1)} mi (median)`;
+      if (ms.response !== null) response = `${m(ms.response)} after bunching (median)`;
+      const parts = [[ms.holds, "hold"], [ms.short_turns, "short-turn"], [ms.express, "express run"],
+        [ms.signs, "sign change"], [ms.extra, "unscheduled trip"]]
+        .filter(([n]) => n).map(([n, w]) => `${n} ${w}${n === 1 ? "" : "s"}`);
+      actions = parts.length ? parts.join(", ") : "none seen";
+      // Fix attempts: did events with an intervention end better than those without?
+      if (ms.events && ms.tried !== undefined) {     // older servers don't send this: leave the row out
+        const words = { hold: "hold", express: "express run", sign: "sign change", "short-turn": "short-turn", extra: "added bus" };
+        const kinds = Object.entries(ms.tried_kinds || {}).filter(([, n]) => n)
+          .map(([k, n]) => `${n} ${words[k]}${n === 1 ? "" : "s"}`).join(", ");
+        attempts = !ms.tried ? `none of ${ms.events} had an intervention` :
+          `${ms.tried} of ${ms.events} had an intervention (${kinds}); ` +
+          (ms.tried_judged ? `<span class="${ms.tried_fixed / ms.tried_judged < 0.5 ? "worse" : ""}">` +
+            `${ms.tried_fixed} of ${ms.tried_judged} of those spaced out again</span>` : "outcome unclear");
+        if (ms.untried_judged) attempts += `; ${ms.untried_fixed} of ${ms.untried_judged} with no intervention spaced out on their own`;
+      }
+    }
+    if (dep && dep.spread !== null) deps = `gaps vary by about ±${mm(dep.spread)}` +
+      (dep.spread_sched !== null ? ` (scheduled ±${mm(dep.spread_sched)})` : "") +
+      (dep.on_time !== null ? `; ${Math.round(dep.on_time * 100)}% of ${dep.n} on time` : "");
+    return {
+      bunch, recover, response, actions, deps, attempts, eff, effDropped, crowd,
+      head: dests(d) ? `To ${dests(d)}` : `Direction ${d}`,
+      bph: pair(bphS.toFixed(1), bphA.toFixed(1), hasSched && bphA < 0.85 * bphS),
+      wait: mA === null ? "—" : pair(mS === null ? "—" : m(mS), m(mA), mS !== null && mA > 1.25 * mS),
+      gap: xA === null ? "—" : pair(xS === null ? "—" : m(xS), m(xA), xS !== null && xA > 1.5 * xS),
+      run, dropped,
+    };
+  });
+  const row = (label, key) => cols.every(c => c[key] === "—") ? "" :      // nothing to show: skip the row
+    `<tr><th scope="row">${label}</th>${cols.map(c => `<td data-label="${c.head}">${c[key]}</td>`).join("")}</tr>`;
+  const w0 = fmtTime.format(new Date(data.start * 1000)), w1 = fmtTime.format(new Date(data.end * 1000));
+  box.innerHTML = `<table><caption>${route.replace("+", " SBS")} route stats, ${w0}–${w1}</caption>
+    <thead><tr><th></th>${cols.map(c => `<th scope="col">${c.head}</th>`).join("")}</tr></thead><tbody>
+    ${row(`Buses per hour at ${st.name}`, "bph")}${row("Typical wait (median gap)", "wait")}${row("Longest gap", "gap")}
+    ${row("Run time, first to last stop", "run")}${row("Crowded (standing room only or full)", "crowd")}${row("Effectively missed", "eff")}${data.dropped24 ? row("Dropped trips, past 24 hours", "dropped") + row("Effectively dropped trips, past 24 hours", "effDropped") : ""}
+    ${data.mgmt ? row("Bunching events", "bunch") + row("Fix attempts", "attempts") + row("Distance to space out again", "recover") +
+      row("Response time", "response") + row("Interventions seen", "actions") + row("Spacing at start of route", "deps") : ""}</tbody></table>
+    <details><summary>How these are measured</summary><p>Buses per hour and gaps are measured where buses pass ${st.name}; change the stop in the Headways list.
+    Effectively missed counts the trips riders experienced as missing: those whose slot fell inside a gap between buses of about twice the scheduled interval or more, at 5+ stops in a row, whether no bus ran them or one ran far off schedule; each missing bus counts once. A dropped trip ID whose slot another bus covered isn’t counted. Effectively dropped trips, past 24 hours, is the same count over the last day, so it already includes dropped trips that left a gap.
+    ${hasSched ? "Run time compares each bus with its scheduled trip over the stretch it was tracked on." : "Add the schedule file to compare with scheduled service."}
+    ${data.mgmt ? "Bunching means a bus arrived less than 30% of the usual gap behind the bus ahead; spaced out again means back above 60%. Response time runs from bunching to the first intervention involving either bus. Start-of-route spacing and on-time departures (1 min early to 5 min late) are measured at the third stop." : ""}</p></details>
+    ${data.dropped24 && data.dropped24.note ? `<p>${data.dropped24.note}</p>` : ""}`;
+  box.classList.toggle("multi", cols.length > 1);
+  box.hidden = false;
+}
+
+// The stretch of route a trip was actually seen moving along, between its first and
+// last stops: skips time sitting at a terminal before leaving or after arriving.
+function observedRun(pts, first, last) {
+  if (pts.length < 2) return null;
+  const a = Math.max(first, pts[0][1]) + 50, b = Math.min(last, pts[pts.length - 1][1]) - 50;
+  if (b <= a) return null;
+  const ta = crossing(pts, a), tb = crossing(pts, b);
+  if (ta === null || tb === null || tb <= ta) return null;
+  const complete = a <= first + 51 && b >= last - 51;
+  // For a complete trip, count the full distance between first and last stop.
+  return { start: ta, end: tb, startDist: a, endDist: b, time: tb - ta,
+           covered: complete ? last - first : b - a, complete };
+}
+
+// Effectively missed trips for one direction: worked out by the server (with lead-in before
+// the window, so trips whose long gap began earlier still count) using the rule: at each
+// stop, a gap between buses of 1.75+ times the scheduled interval means riders lost a bus,
+// charged to the scheduled trip whose slot sits deepest in the gap; a trip that ran but was
+// charged at 5+ stops in a row was effectively missed. Counted against the scheduled trips
+// on the chart. Null without a schedule, or when buses come every 4 minutes or less.
+function effectivelyMissed(d) {
+  const res = data.eff && data.eff[String(d)];
+  if (!res) return null;
+  const onChart = (data.sched || []).filter(t => t.dir === d && t.start <= data.end && t.end >= data.start);
+  const byId = Object.fromEntries(onChart.map(t => [t.trip, t]));
+  const missed = res.missed.filter(m => byId[m.trip]).map(m => ({ ...m, st: byId[m.trip] }));
+  return { missed, covered: res.covered || [], dropped: onChart.filter(t => t.ran === false), scheduled: onChart.length };
+}
+
+// Effectively missed / covered details for one scheduled trip, for its hover.
+function effFor(st) {
+  const res = data.eff && data.eff[String(st.dir)];
+  if (!res) return {};
+  return { missed: res.missed.find(m => m.trip === st.trip), covered: (res.covered || []).find(c => c.trip === st.trip) };
+}
+
+// When a string first reaches each distance in bounds (ascending), in one pass; null where
+// it doesn't cross, or the readings around the crossing are more than 5 minutes apart.
+function crossingsAll(pts, bounds) {
+  const out = new Array(bounds.length).fill(null);
+  if (pts.length < 2) return out;
+  let j = 0;
+  for (let k = 0; k < bounds.length; k++) {
+    const D = bounds[k];
+    if (pts[0][1] >= D || pts[pts.length - 1][1] < D) continue;
+    while (j + 1 < pts.length && pts[j + 1][1] < D) j++;
+    if (j + 1 >= pts.length) break;
+    const [t0, d0] = pts[j], [t1, d1] = pts[j + 1];
+    if (t1 - t0 <= 300) out[k] = d1 > d0 ? t0 + (D - d0) / (d1 - d0) * (t1 - t0) : t0;
+  }
+  return out;
+}
+
+// Hover line comparing a bus with its scheduled trip: scheduled times, and how early or
+// late it was where it was first and last tracked (buses often aren't tracked at the very
+// ends of the line, so comparing at the terminals would mislead).
+function scheduleLine(tr) {
+  if (!data.has_schedule) return "";
+  const st = schedFor(tr);
+  if (!st) return "<br>Not in the schedule";
+  const p = tr.pts, a = p[0][1] + 50, b = p[p.length - 1][1] - 50;
+  const off = (dist) => {
+    const t = crossing(p, dist), due = crossing(st.pts, dist);
+    if (t === null || due === null) return null;
+    const m = Math.round((t - due) / 60);
+    return m === 0 ? "on time" : (m > 0 ? `${m} min late` : `${-m} min early`);
+  };
+  // Only give a finishing figure once the bus has reached the end of the line.
+  const stops = (data.stops && data.stops[String(tr.dir)]) || [];
+  const lastStop = stops.length ? stops[stops.length - 1].dist : null;
+  const finished = lastStop !== null && p[p.length - 1][1] >= lastStop - 400;
+  const s0 = b > a ? off(a) : null, s1 = b > a && finished ? off(b) : null;
+  const parts = [s0 && `started ${s0}`, s1 && `finished ${s1}`].filter(Boolean);
+  return `<br>Scheduled ${fmtTime.format(new Date(st.start * 1000))}–${fmtTime.format(new Date(st.end * 1000))}` +
+    (parts.length ? `: ${parts.join(", ")}` : "");
+}
+
+// Hover lines with a bus's load where the pointer is on its line, and its peak load.
+function loadLine(tr, ev, hitEl) {
+  if (!tr.occ && !tr.cnt) return "";
+  const cap = tr.load && tr.load[2];
+  const words = ["seats available", "standing room only", "full"];
+  const describe = i => {
+    const lvl = tr.occ ? tr.occ[i] : null, n = tr.cnt ? tr.cnt[i] : null;
+    const parts = [lvl !== null && lvl !== undefined ? words[lvl] : null,
+                   n !== null && n !== undefined ? `${n} aboard` + (cap ? ` of ${cap}` : "") : null].filter(Boolean);
+    return parts.length ? parts.join(", ") : null;
+  };
+  // Time under the pointer, from its position across the chart.
+  let idx = tr.pts.length - 1;
+  if (ev && hitEl && hitEl.ownerSVGElement && data) {
+    const box = hitEl.ownerSVGElement.getBoundingClientRect();
+    const W = box.width, plotL = chartGeom.left, plotR = W - chartGeom.right;
+    const t = data.start + (ev.clientX - box.left - plotL) / (plotR - plotL) * (data.end - data.start);
+    idx = 0;
+    while (idx + 1 < tr.pts.length && tr.pts[idx + 1][0] <= t) idx++;
+  }
+  // Nearest reported load at or before that point.
+  let k = idx;
+  while (k > 0 && describe(k) === null) k--;
+  const here = describe(k);
+  let out = here ? `<br>Load at ${fmtTime.format(new Date(tr.pts[k][0] * 1000))}: ${here}` : "";
+  if (tr.cnt) {
+    let best = -1;
+    tr.cnt.forEach((n, i) => { if (n !== null && n !== undefined && (best < 0 || n > tr.cnt[best])) best = i; });
+    if (best >= 0) {
+      const stops = (data.stops && data.stops[String(tr.dir)]) || [];
+      const dist = tr.pts[best][1];
+      const near = stops.length ? stops.reduce((a, b) => Math.abs(b.dist - dist) < Math.abs(a.dist - dist) ? b : a) : null;
+      out += `<br>Peak: ${tr.cnt[best]} aboard` + (near ? ` near ${near.name}` : "") +
+        ` at ${fmtTime.format(new Date(tr.pts[best][0] * 1000))}`;
+    }
+  }
+  return out;
+}
+
+// The scheduled trip a live trip is running, matched on trip ID.
+function schedFor(tr) {
+  const id = tr.trip, short = id.includes("_") ? id.slice(id.indexOf("_") + 1) : id;
+  return (data.sched || []).find(st => st.trip === id || st.trip === short) || null;
+}
+
+// Tooltip next to the pointer, kept fully on screen: flips to the left of or above the
+// pointer when it would run past the window's edge.
+function moveTip(ev, content, isHtml) {
+  const tip = $("tip");
+  if (isHtml) tip.innerHTML = content; else tip.textContent = content;
+  tip.style.display = "block";
+  const w = tip.offsetWidth, h = tip.offsetHeight, pad = 8, gap = 14;
+  let left = ev.clientX + gap, top = ev.clientY + gap;
+  if (left + w > window.innerWidth - pad) left = ev.clientX - gap - w;
+  if (top + h > window.innerHeight - pad) top = ev.clientY - gap - h;
+  tip.style.left = Math.max(pad, left) + "px";
+  tip.style.top = Math.max(pad, top) + "px";
+}
+function hideTipNow() { $("tip").style.display = "none"; }
+
+// Time a string first reaches distance D, interpolated between readings; null if it never crosses D.
+function crossing(pts, D) {
+  if (!pts.length || pts[0][1] > D || pts[pts.length - 1][1] < D) return null;
+  for (let i = 1; i < pts.length; i++) {
+    const [t0, d0] = pts[i - 1], [t1, d1] = pts[i];
+    if (d1 >= D) return d1 === d0 ? t0 : t0 + (D - d0) / (d1 - d0) * (t1 - t0);
+  }
+  return pts[0][0];
+}
+
+document.querySelectorAll("[data-dir]").forEach(b => b.addEventListener("click", () => {
+  dirSel = b.dataset.dir;
+  document.querySelectorAll("[data-dir]").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+  if (data) draw();
+}));
+$("picker").addEventListener("toggle", () => {
+  $("pickerHint").textContent = $("picker").open ? "Hide routes" : "Show all routes";
+});
+["showHw", "showRt", "hwAt", "showSched", "showLanes", "showLoad"].forEach(id => $(id).addEventListener("change", () => data && draw()));
+$("showMgmt").addEventListener("change", () => refresh());   // needs the analysis from the server
+["day", "tod", "hrs"].forEach(id => {
+  $(id).addEventListener("input", updateLabels);
+  $(id).addEventListener("change", refresh);
+});
+// Only redraw when the chart's width really changes (e.g. rotating the phone). On iPhone,
+// Safari fires resize whenever its toolbar shrinks or grows while scrolling.
+window.addEventListener("resize", () => { if (data && $("chart").clientWidth !== lastW) draw(); });
+updateLabels();
+loadRoutes();
+</script>
+</body>
+</html>
