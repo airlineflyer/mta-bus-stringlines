@@ -779,9 +779,10 @@ RECOVERED = 0.6      # gap back above this share = spaced out again
 SIGN_WORDS = ("NOT IN SERVICE", "DROP OFF", "DROP-OFF", "LIMITED", "LTD", "EXPRESS", "NIS")
 
 
-def crossings(pts, bounds):
+def crossings(pts, bounds, max_gap=300):
     """When a string first reaches each distance in bounds (ascending), in one
-    pass; None where it doesn't cross, or readings around it are > 5 min apart."""
+    pass; None where it doesn't cross, or readings around it are more than
+    max_gap seconds apart (5 minutes unless asked otherwise)."""
     out = [None] * len(bounds)
     if len(pts) < 2:
         return out
@@ -794,7 +795,7 @@ def crossings(pts, bounds):
         if j + 1 >= len(pts):
             break
         (t0, d0), (t1, d1) = pts[j], pts[j + 1]
-        if t1 - t0 <= 300:
+        if t1 - t0 <= max_gap:
             out[k] = t0 + (dist - d0) / (d1 - d0) * (t1 - t0) if d1 > d0 else t0
     return out
 
@@ -1024,20 +1025,32 @@ def management(trips, direction, bounds, names, other_bounds=None, sched_ids=Non
                                     f"Consistent with a hold."})
 
     # Express or drop-off-only running: 3+ stops much faster than usual.
-    seg_med = []
-    for k in range(n - 1):
-        v = [c[k + 1] - c[k] for c in cs if c[k] is not None and c[k + 1] is not None and c[k + 1] > c[k]]
-        seg_med.append(statistics.median(v) if len(v) >= 5 else None)
+    # Typical travel time between stops, by time of day (buses run much faster at night).
+    seg_by = {}
+    for c in cs:
+        for k in range(n - 1):
+            if c[k] is not None and c[k + 1] is not None and c[k + 1] > c[k]:
+                seg_by.setdefault((k, period_of(ny_local(c[k])[1])), []).append(c[k + 1] - c[k])
+    seg_typ = {key: statistics.median(v) for key, v in seg_by.items() if len(v) >= 5}
     express = 0
+    def seg_usual(k, t):
+        return seg_typ.get((k, period_of(ny_local(t)[1])))
     for i, c in enumerate(cs):
         k = 0
         while k < n - 1:
             run_end, saved = k, 0.0
-            while (run_end < n - 1 and seg_med[run_end] and c[run_end] is not None and c[run_end + 1] is not None
-                   and c[run_end + 1] - c[run_end] < 0.6 * seg_med[run_end]):
-                saved += seg_med[run_end] - (c[run_end + 1] - c[run_end])
+            while (run_end < n - 1 and c[run_end] is not None and c[run_end + 1] is not None
+                   and seg_usual(run_end, c[run_end])
+                   and c[run_end + 1] - c[run_end] < 0.6 * seg_usual(run_end, c[run_end])):
+                saved += seg_usual(run_end, c[run_end]) - (c[run_end + 1] - c[run_end])
                 run_end += 1
-            if run_end - k >= 3 and saved >= 90:
+            # A bus right behind another runs fast because the bus ahead picked everyone up:
+            # that's not express running. Only count a fast stretch when the bus had a
+            # reasonable gap ahead (70%+ of the usual), as a late bus told to skip pickups does.
+            ahead = [t for t, j in per_stop[k] if j != i and t < c[k]] if run_end - k >= 4 else []
+            g_here = usual(k, c[k]) if ahead else None
+            clear_ahead = bool(ahead) and g_here is not None and c[k] - ahead[-1] >= 0.7 * g_here
+            if run_end - k >= 4 and saved >= 120 and clear_ahead:
                 express += 1
                 actions.append((c[k], i, "express",
                                 f"{label(i).lower()} ran express or drop-off only from {names[k]} to {names[run_end]}"))
@@ -1326,8 +1339,15 @@ def effectively_missed_trips(trips, sched, direction, bounds, start, end, want_c
     live = [t for t in trips if t["dir"] == direction]
     sch = [t for t in sched if t["dir"] == direction]
     keep = lambda v: v if v is not None and start <= v <= end else None
-    lc = [[keep(v) for v in crossings(t["pts"], bounds)] for t in live]
+    # A bus that goes quiet (no position reports) and reappears further along within 15
+    # minutes did pass the stops in between: don't let reporting dropouts look like gaps.
+    lc = [[keep(v) for v in crossings(t["pts"], bounds, max_gap=MAX_GAP_SECONDS)] for t in live]
     sc = [[keep(v) for v in crossings(t["pts"], bounds)] for t in sch]
+    # Each scheduled trip's own bus, if one ran it, by trip ID.
+    own = {}
+    for j, t in enumerate(live):
+        own.setdefault(t["trip"], j)
+        own.setdefault(strip_agency(t["trip"]), j)
     hw_at, all_gaps = [], []
     for k in range(n):
         ts = sorted(c[k] for c in sc if c[k] is not None)
@@ -1339,15 +1359,27 @@ def effectively_missed_trips(trips, sched, direction, bounds, start, end, want_c
     hw_all = statistics.median(all_gaps)
     hit = [[None] * n for _ in sch]
     for k in range(n):
-        hw = hw_at[k] or hw_all
         act = sorted(c[k] for c in lc if c[k] is not None)
         due = [(c[k], i) for i, c in enumerate(sc) if c[k] is not None]
+        s_times = sorted(t for t, _ in due)
         for a1, a2 in zip(act, act[1:]):
             gap = a2 - a1
+            # The scheduled interval at this stop around the time of this wait (it changes
+            # through the day: every 8 minutes midday might be every 15 in the evening).
+            lo = max(0, bisect.bisect_right(s_times, a1) - 1)
+            hi = bisect.bisect_left(s_times, a2)
+            nearby = [y - x for x, y in zip(s_times[lo:hi + 1], s_times[lo + 1:hi + 2]) if 0 < y - x < 3 * 3600]
+            hw = statistics.median(nearby) if nearby else (hw_at[k] or hw_all)
             lost = int(gap / hw + 0.25) - 1
             if lost < 1 or gap > 3 * 3600:
                 continue
-            inside = sorted((d for d in due if a1 < d[0] < a2), key=lambda d: -min(d[0] - a1, a2 - d[0]))
+            # A trip whose own bus passed here within half an interval of its time served its
+            # slot here, whatever the gaps around it: never charge it.
+            def served(i):
+                j = own.get(sch[i]["trip"])
+                return j is not None and lc[j][k] is not None and abs(lc[j][k] - sc[i][k]) <= 0.5 * hw
+            inside = sorted((d for d in due if a1 < d[0] < a2 and not served(d[1])),
+                            key=lambda d: -min(d[0] - a1, a2 - d[0]))
             for _, i in inside[:lost]:
                 hit[i][k] = (gap, hw)
     missed = []
