@@ -1357,12 +1357,16 @@ def effectively_missed_trips(trips, sched, direction, bounds, start, end, want_c
     if not all_gaps or statistics.median(all_gaps) < 240:
         return None
     hw_all = statistics.median(all_gaps)
-    hit = [[None] * n for _ in sch]
+    # Follow each long gap as one event: the same two buses on either side of it, stop by
+    # stop. Buses drift later along the route, so the scheduled slot sitting deepest in a
+    # gap can change partway along; charging per stop would then count one lost bus two or
+    # three times. Each event counts once (or once per bus lost, for very long gaps).
+    events = {}                     # (bus before, bus after) -> [(k, lost, gap, hw, [slots, deepest first])]
     for k in range(n):
-        act = sorted(c[k] for c in lc if c[k] is not None)
+        act = sorted((c[k], j) for j, c in enumerate(lc) if c[k] is not None)
         due = [(c[k], i) for i, c in enumerate(sc) if c[k] is not None]
         s_times = sorted(t for t, _ in due)
-        for a1, a2 in zip(act, act[1:]):
+        for (a1, ja), (a2, jb) in zip(act, act[1:]):
             gap = a2 - a1
             # The scheduled interval at this stop around the time of this wait (it changes
             # through the day: every 8 minutes midday might be every 15 in the evening).
@@ -1380,24 +1384,34 @@ def effectively_missed_trips(trips, sched, direction, bounds, start, end, want_c
                 return j is not None and lc[j][k] is not None and abs(lc[j][k] - sc[i][k]) <= 0.5 * hw
             inside = sorted((d for d in due if a1 < d[0] < a2 and not served(d[1])),
                             key=lambda d: -min(d[0] - a1, a2 - d[0]))
-            for _, i in inside[:lost]:
-                hit[i][k] = (gap, hw)
+            events.setdefault((ja, jb), []).append((k, lost, gap, hw, [i for _, i in inside]))
+    charged = {}                    # trip index -> details of the event it was charged for
+    for runs in events.values():
+        # split into stretches of consecutive stops
+        stretch = []
+        for item in runs + [None]:
+            if item is not None and (not stretch or item[0] == stretch[-1][0] + 1):
+                stretch.append(item)
+                continue
+            if len(stretch) >= 5:
+                lost_n = max(1, round(statistics.median(x[1] for x in stretch)))
+                tally = {}
+                for x in stretch:
+                    for rank, i in enumerate(x[4][:x[1]]):
+                        tally[i] = tally.get(i, 0) + 1
+                # A trip no bus ran at all is clearly the missing one when it's in the gap;
+                # otherwise, the slot that sat deepest in the gap most often along the stretch.
+                for i in sorted(tally, key=lambda i: (sch[i].get("ran") is not False, -tally[i]))[:lost_n]:
+                    if i not in charged:
+                        charged[i] = {"k0": stretch[0][0], "k1": stretch[-1][0], "count": len(stretch),
+                                      "gap": max(x[2] for x in stretch),
+                                      "hw": statistics.median(x[3] for x in stretch)}
+            stretch = [item] if item is not None else []
     missed = []
     for i, st in enumerate(sch):
-        run = best = None
-        for k in range(n):
-            if sc[i][k] is None:
-                continue
-            if hit[i][k]:
-                run = run or {"k0": k, "count": 0, "gap": 0, "hw": hit[i][k][1]}
-                run.update(k1=k, count=run["count"] + 1, gap=max(run["gap"], hit[i][k][0]))
-                if not best or run["count"] > best["count"]:
-                    best = dict(run)
-            else:
-                run = None
-        if best and best["count"] >= 5:
+        if i in charged:
             # Rider-based: counted whether no bus ran it at all or one ran far off schedule.
-            missed.append(dict(best, st=st, dropped=st.get("ran") is False))
+            missed.append(dict(charged[i], st=st, dropped=st.get("ran") is False))
         elif st.get("ran") is False and want_covered is not None:
             # No bus ran this trip ID, yet riders didn't lose its slot: another bus came
             # through within half a scheduled interval of when it was due. Note which.

@@ -83,7 +83,7 @@ def summarize_route_day(db, route, day, watched_all):
     d1 = d0 + 86400
     lead = d0 - 3 * 3600
     in_day = lambda t: t is not None and d0 <= t < d1
-    watched = {k for k in watched_all if d0 // 600 <= k < d1 // 600 + 1}
+    watched = {k for k in watched_all if d0 // 600 <= k < d1 // 600}
     coverage = len(watched) / 144 if watched_all else None
     ok_span = (lambda a, c: True) if not watched_all else \
         (lambda a, c: all(k in watched_all for k in range(int(a) // 600, int(c) // 600 + 1)))
