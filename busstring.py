@@ -820,6 +820,18 @@ def crossings(pts, bounds, max_gap=300):
     return out
 
 
+def well_seen(cs, n, share=0.85):
+    """Which stops nearly every bus is actually seen passing. Buses often aren't tracked
+    over the first or last few stops (the feed assigns the trip late, or drops it early),
+    which makes gaps there look huge; stops seen by fewer than `share` of the buses seen at
+    the route's best-observed stops are left out of gap measures."""
+    seen = [sum(1 for c in cs if c[k] is not None) for k in range(n)]
+    if not any(seen):
+        return [False] * n
+    ref = sorted(seen)[min(n - 1, int(0.75 * n))] or max(seen)
+    return [x >= share * ref for x in seen]
+
+
 def dist_at(pts, t):
     """Where a string was at time t (interpolated)."""
     for (t0, d0), (t1, d1) in zip(pts, pts[1:]):
@@ -843,6 +855,7 @@ def management(trips, direction, bounds, names, other_bounds=None, sched_ids=Non
         return None
     first, last = bounds[0], bounds[-1]
     cs = [crossings(t["pts"], bounds) for t in T]
+    seen_ok = well_seen(cs, n)
 
     # Usual gap at each stop, by time of day.
     per_stop, typ = [], {}
@@ -1185,6 +1198,8 @@ def management(trips, direction, bounds, names, other_bounds=None, sched_ids=Non
         ev = None
         ks = [k for k in range(n) if cs[i][k] is not None]
         for k in ks:
+            if not seen_ok[k]:
+                continue
             g = usual(k, cs[i][k])
             if not g:
                 continue
@@ -1383,7 +1398,10 @@ def effectively_missed_trips(trips, sched, direction, bounds, start, end, want_c
     # gap can change partway along; charging per stop would then count one lost bus two or
     # three times. Each event counts once (or once per bus lost, for very long gaps).
     events = {}                     # (bus before, bus after) -> [(k, lost, gap, hw, [slots, deepest first])]
+    seen_ok = well_seen(lc, n)
     for k in range(n):
+        if not seen_ok[k]:
+            continue                # too few buses seen here to trust the gaps
         act = sorted((c[k], j) for j, c in enumerate(lc) if c[k] is not None)
         due = [(c[k], i) for i, c in enumerate(sc) if c[k] is not None]
         s_times = sorted(t for t, _ in due)

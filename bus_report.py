@@ -139,6 +139,7 @@ def summarize_route_day(db, route, day, watched_all):
 
         # Waits: actual and scheduled gaps between buses at every stop.
         lc = [b.crossings(t["pts"], bounds, max_gap=b.MAX_GAP_SECONDS) for t in trips]
+        seen_ok = b.well_seen([[v if v is not None and lead <= v < d1 else None for v in c] for c in lc], n)
         sc = [b.crossings(st["pts"], bounds) for st in sd]
         mid = n // 2
         sched_hw_mid = []
@@ -148,12 +149,14 @@ def summarize_route_day(db, route, day, watched_all):
             per_hour = {}
             for a, g in s_gaps:
                 per_hour.setdefault(hour_of(a), []).append(g)
-                if in_day(a):
+                if in_day(a) and seen_ok[k]:       # same stops on both sides of the comparison
                     add(a, "ss1", g)
                     add(a, "ss2", g * g)
             hw_hour = {h: statistics.median(v) for h, v in per_hour.items()}
             if k == mid:
                 sched_hw_mid = [g for a, g in s_gaps if in_day(a) and 7 <= hour_of(a) < 19]
+            if not seen_ok[k]:
+                continue            # too few buses seen at this stop to trust its gaps
             a_times = sorted((c[k], i) for i, c in enumerate(lc) if c[k] is not None and lead <= c[k] < d1)
             for (a, ia), (c, ic) in zip(a_times, a_times[1:]):
                 g = c - a
