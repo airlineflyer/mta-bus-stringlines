@@ -58,7 +58,7 @@ FIELDS = [
     "holds", "shorts", "express", "extra", "signs",
     "rt_act", "rt_sched", "rt_n", "sp_dist", "sp_time",
     "crowd_known", "crowd_s", "gl_crowd", "gl_known", "gn_crowd", "gn_known",
-    "buses", "buses_load",
+    "buses", "buses_load", "lost", "slots", "seen",
 ]
 
 
@@ -185,6 +185,35 @@ def summarize_route_day(db, route, day, watched_all):
                         elif 0.5 * hw <= g <= 1.25 * hw:
                             add(c, "gn_known")
                             add(c, "gn_crowd", int(lvl >= 1))
+
+        # Effectively missed, simply: at three well-observed stops in the middle of the route
+        # (about 30%, 50% and 70% of the way along), every gap of 1.75 times the scheduled
+        # interval at that time is one lost bus (2.75 times: two, ...). Averaged over the three
+        # stops, against the scheduled buses due there. Checkable against the headway labels.
+        good = [k for k in range(n) if seen_ok[k]]
+        checks = sorted({good[int(f * (len(good) - 1))] for f in (0.3, 0.5, 0.7)}) if good else []
+        for k in checks:
+            s_times = sorted(c[k] for c in sc if c[k] is not None and lead <= c[k] < d1 + 3 * 3600)
+            for t in s_times:
+                if in_day(t) and ok_span(t, t):
+                    add(t, "slots", 1 / len(checks))
+            a_times = sorted(c[k] for c in lc if c[k] is not None and lead <= c[k] < d1)
+            for t in a_times:
+                if in_day(t) and ok_span(t, t):
+                    add(t, "seen", 1 / len(checks))
+            for a, c in zip(a_times, a_times[1:]):
+                g = c - a
+                if not in_day(a) or not 0 < g < 3 * 3600 or not ok_span(a, c):
+                    continue
+                lo = max(0, b.bisect.bisect_right(s_times, a) - 1)
+                hi = b.bisect.bisect_left(s_times, c)
+                near = [y - x for x, y in zip(s_times[lo:hi + 1], s_times[lo + 1:hi + 2]) if 0 < y - x < 3 * 3600]
+                if not near:
+                    continue
+                hw = statistics.median(near)
+                lost = int(g / hw + 0.25) - 1
+                if lost > 0:
+                    add(a, "lost", lost / len(checks))
 
         # Run time against schedule, speed, crowding, buses reporting loads.
         first, last = bounds[0], bounds[-1]
@@ -336,7 +365,12 @@ def measures(acc):
         "scheduled": acc["sched"], "judged": judged,
         "delivered": ratio(acc["ran"], judged), "dropped": ratio(acc["dropped"], judged),
         "dropped_n": acc["dropped"], "covered_n": acc["covered"],
-        "eff": ratio(acc["eff"], judged), "eff_n": acc["eff"], "eff_ran_n": acc["eff"] - acc["eff_dropped"],
+        "eff": ratio(acc["lost"], acc["slots"]), "eff_n": round(acc["lost"]),
+        "eff_ran_n": max(0, round(acc["lost"] - (acc["dropped"] - acc["covered"]))),
+        # Losing a share f of buses means waits of at least 1 + 2f times scheduled; flag
+        # anything that claims more loss than the measured waits allow.
+        "wait_ratio": wait_a / wait_s if wait_a and wait_s else None,
+        "implied_ratio": 1 + 2 * acc["lost"] / acc["slots"] if acc["slots"] else None,
         "wait_actual": wait_a / 60 if wait_a else None, "wait_sched": wait_s / 60 if wait_s else None,
         "excess": (wait_a - wait_s) / 60 if wait_a and wait_s else None,
         "wait_assess": ratio(acc["wa_ok"], acc["wa_n"]),
@@ -356,6 +390,9 @@ def measures(acc):
         "crowd_after_normal": ratio(acc["gn_crowd"], acc["gn_known"]) if acc["gn_known"] >= 10 else None,
         "load_share": ratio(acc["buses_load"], acc["buses"]),
         "match_rate": ratio(acc["ran"], judged),
+        "bus_ratio": ratio(acc["seen"], acc["slots"]),
+        "consistent": None if not (acc["slots"] and wait_a and wait_s) else
+                      (1 + 2 * acc["lost"] / acc["slots"]) <= wait_a / wait_s + 0.15,
     }
 
 
@@ -560,15 +597,19 @@ def findings(rows, by_route, M, collect, route_type):
         out.append(f"<b>Waits were worst in the {PERIOD_LABEL[worst]}.</b> Riders waited {mins(w['wait_actual'])} "
                    f"on average against {mins(w['wait_sched'])} scheduled, {mins(w['excess'])} extra, compared with "
                    f"{mins(per[best]['excess'])} extra in the {PERIOD_LABEL[best]}.")
-    if allm["eff_n"] and allm["judged"]:
-        ran_lost = allm["eff_ran_n"]
-        out.append(f"<b>Most lost service wasn't cancelled trips.</b> Riders effectively lost {allm['eff_n']:,} trips "
-                   f"({pct(allm['eff'], 1)} of scheduled), but only {allm['dropped_n']:,} were dropped outright"
-                   + (f", {allm['covered_n']:,} of them with another bus covering the slot" if allm["covered_n"] else "")
-                   + f". {ran_lost:,} of the lost trips ran, but so late or bunched that riders were left with a "
-                   f"double-length wait." if ran_lost > allm["dropped_n"] else
-                   f"<b>Cancelled trips drove most lost service.</b> Riders effectively lost {allm['eff_n']:,} trips "
-                   f"({pct(allm['eff'], 1)}); {allm['eff_n'] - ran_lost:,} of them were dropped with no bus covering the slot.")
+    if allm["eff"] is not None and allm["judged"]:
+        lost, dropped = allm["eff_n"], allm["dropped_n"]
+        if lost > 1.3 * dropped:
+            out.append(f"<b>Most lost service wasn't cancelled trips.</b> At mid-route stops, riders effectively lost "
+                       f"about {lost:,} buses ({pct(allm['eff'], 1)} of those scheduled), against {dropped:,} trips "
+                       f"dropped outright: most lost service came from bunching and lateness.")
+        else:
+            out.append(f"<b>Cancelled trips drove most lost service.</b> Riders effectively lost about {lost:,} buses "
+                       f"({pct(allm['eff'], 1)}), close to the {dropped:,} trips dropped outright.")
+        if allm.get("consistent") is False:
+            out.append(f"<b>Check:</b> losing {pct(allm['eff'])} of buses implies waits at least "
+                       f"{allm['implied_ratio']:.2f} times scheduled, but measured waits were {allm['wait_ratio']:.2f} "
+                       f"times. Treat effectively missed with caution.")
     if allm["events"] >= 20 and allm["tried_share"] is not None:
         s = (f"<b>Bunching was rarely managed.</b>" if allm["tried_share"] < 0.25 else "<b>Bunching often drew a response.</b>")
         s += (f" There were {allm['events']:,} bunching events; {pct(allm['tried_share'])} had a visible intervention "
@@ -582,6 +623,22 @@ def findings(rows, by_route, M, collect, route_type):
         if a > c * 1.2:
             out.append(f"<b>Long gaps meant crowded buses.</b> On buses reporting loads, {pct(a)} of buses arriving "
                        f"after a long gap were standing room only or full, against {pct(c)} after a normal gap.")
+    more, fewer = [], []
+    for route, rs in by_route.items():
+        m = M(collect(rs))
+        if m["bus_ratio"] is not None and m["judged"] >= 50:
+            if m["bus_ratio"] >= 1.10:
+                more.append((m["bus_ratio"], route))
+            elif m["bus_ratio"] <= 0.90:
+                fewer.append((m["bus_ratio"], route))
+    if more or fewer:
+        s = "<b>Buses run against schedule.</b>"
+        if more:
+            s += (" More buses than scheduled ran on " + ", ".join(f"{r} ({x * 100:.0f}%)" for x, r in sorted(more, reverse=True)[:6]) +
+                  ": extra buses shorten average waits even where long gaps happen.")
+        if fewer:
+            s += (" Fewer than scheduled ran on " + ", ".join(f"{r} ({x * 100:.0f}%)" for x, r in sorted(fewer)[:6]) + ".")
+        out.append(s)
     types = {}
     for route, rs in by_route.items():
         types.setdefault(route_type(route), []).extend(rs)
@@ -1104,6 +1161,7 @@ HTML_TEMPLATE = r"""<!doctype html>
   tbody tr { cursor: pointer; } tbody tr:hover { background: #f4f6f8; } tr.sel { background: #e8eefc !important; }
   .worst td:first-child { font-weight: 700; color: #c62828; }
   .summary td { text-align: left; white-space: normal; } .summary td:first-child { font-weight: 600; width: 230px; }
+  .summary i { color: #6b7078; font-weight: 600; font-style: normal; text-transform: uppercase; font-size: 11px; letter-spacing: .04em; }
   .wrap { overflow-x: auto; } ul { padding-left: 20px; } li { margin: 4px 0; }
   .bars { display: flex; gap: 22px; align-items: flex-end; height: 170px; margin: 10px 0 4px; }
   .bar { display: flex; flex-direction: column; align-items: center; font-size: 11px; color: #6b7078; }
@@ -1126,7 +1184,8 @@ window.onerror = (msg, src, line, col) => {
 <div class="wrap"><table id="ptable"></table></div>
 <h2>By day</h2><div class="wrap"><table id="dtable"></table></div>
 <h2>Routes</h2>
-<div class="small muted">Click a column to sort, a route for details. The 10 routes with the worst excess wait are in red.</div>
+<div class="small muted">Click a column to sort, a route for details. The 10 routes with the worst excess wait are in red.
+"Check" flags routes whose effectively missed count implies longer waits than were measured.</div>
 <div class="wrap"><table id="rtable"><thead></thead><tbody></tbody></table></div>
 <div id="detail" hidden></div>
 </main>
@@ -1144,15 +1203,21 @@ $("title").textContent = D.title; $("sub").textContent = D.period + ". " + D.rou
   Object.entries(D.coverage).map(([d, c]) => D.labels.day[d] + " " + pct(c)).join(", ") + ".";
 const B = D.boro;
 const sum = [
+  ["<i>Solid measures</i>", ""],
   ["Service delivered", `${pct(B.delivered, 1)} of ${B.judged.toLocaleString()} scheduled trips ran`],
   ["Dropped trips", `${B.dropped_n.toLocaleString()} (${pct(B.dropped, 1)}), ${B.covered_n.toLocaleString()} with another bus covering the slot`],
-  ["Effectively missed", `${B.eff_n.toLocaleString()} (${pct(B.eff, 1)}): slots riders experienced as missing`],
   ["Average wait, actual vs scheduled", `${min(B.wait_actual)} vs ${min(B.wait_sched)} min (${sgn(B.excess)} min)`],
   ["Wait assessment", `${pct(B.wait_assess)} of gaps within 3 min (rush) / 5 min (other) of schedule`],
-  ["Bunching", `${pct(B.bunched, 1)} of buses arrived bunched; ${pct(B.long_gaps, 1)} of waits over double the scheduled gap`],
+  ["Long gaps", `${pct(B.long_gaps, 1)} of waits over double the scheduled gap`],
+  ["Buses run vs scheduled", `${pct(B.bus_ratio)} of scheduled buses passed the mid-route stops (more than 100% means extra buses ran)`],
+  ["Run time vs schedule", `${rt(B.runtime)}; average speed ${min(B.speed_mph)} mph`],
+  ["<i>Experimental measures</i>", ""],
+  ["Effectively missed", `about ${B.eff_n.toLocaleString()} buses (${pct(B.eff, 1)} of scheduled): long gaps at three mid-route stops per route` +
+    (B.consistent === false ? ` <span class="bad">Check failed: implies waits at least ${B.implied_ratio.toFixed(2)}× scheduled; measured ${B.wait_ratio.toFixed(2)}×</span>` :
+     B.consistent ? ` <span class="muted">(consistent with measured waits)</span>` : "")],
+  ["Bunching", `${pct(B.bunched, 1)} of buses arrived bunched`],
   ["Bunching events", `${B.events.toLocaleString()} (${min(B.events_per_100)} per 100 trips); ${pct(B.recovery)} spaced out again`],
   ["Management action", `${pct(B.tried_share)} of events had a visible intervention (with: ${pct(B.tried_success)} spaced out again; without: ${pct(B.untried_success)}). ${B.holds} holds, ${B.shorts} short-turns, ${B.express_runs} express runs, ${B.extra} added trips; median response ${min(B.response_min)} min`],
-  ["Run time vs schedule", `${rt(B.runtime)}; average speed ${min(B.speed_mph)} mph`],
   ["Crowding", `standing room only or full ${pct(B.crowded)} of the time on the ${pct(B.load_share)} of buses reporting loads`],
 ];
 $("summary").innerHTML = sum.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join("");
@@ -1161,15 +1226,18 @@ $("findings").innerHTML = D.findings.map(f => `<li>${f}</li>`).join("") || "<li>
 
 const COLS = [
   ["Route", r => r.route, "l"], ["Type", r => r.type, "l"],
-  ["Delivered", r => r.m.delivered, "p1"], ["Dropped", r => r.m.dropped, "p1"], ["Eff. missed", r => r.m.eff, "p1"],
+  ["Delivered", r => r.m.delivered, "p1"], ["Buses vs sched", r => r.m.bus_ratio, "p"], ["Dropped", r => r.m.dropped, "p1"], ["Eff. missed", r => r.m.eff, "p1"],
   ["Avg wait", r => r.m.wait_actual, "m"], ["Sched", r => r.m.wait_sched, "m"], ["Excess", r => r.m.excess, "s"],
   ["Wait assess.", r => r.m.wait_assess, "p"], ["Bunched", r => r.m.bunched, "p1"], ["Long gaps", r => r.m.long_gaps, "p1"],
   ["Events/100", r => r.m.events_per_100, "m"], ["Spaced out", r => r.m.recovery, "p"], ["Intervened", r => r.m.tried_share, "p"],
   ["Run time", r => r.m.runtime, "rt"], ["Speed", r => r.m.speed_mph, "m"], ["Crowded", r => r.m.crowded, "p"],
   ["Trips judged", r => r.m.judged, "n"],
+  ["Check", r => r.m.consistent === false ? 0 : r.m.consistent ? 1 : null, "chk"],
 ];
 const fmt = (v, k) => k === "l" ? v : k === "p" ? pct(v) : k === "p1" ? pct(v, 1) : k === "m" ? min(v) :
-  k === "s" ? sgn(v) : k === "rt" ? rt(v) : (v ?? "–").toLocaleString();
+  k === "s" ? sgn(v) : k === "rt" ? rt(v) :
+  k === "chk" ? (v === 0 ? '<span class="bad" title="Effectively missed implies longer waits than were measured">⚠ check</span>' : v === 1 ? "ok" : "–") :
+  (v ?? "–").toLocaleString();
 function rowsTable(el, head, items, cells) {
   el.innerHTML = `<thead><tr>${head.map(h => `<th class="${h[2] === "l" ? "l" : ""}">${h[0]}</th>`).join("")}</tr></thead>` +
     `<tbody>${items.map(it => `<tr>${cells(it).map((c, i) => `<td class="${head[i][2] === "l" ? "l" : ""}">${c}</td>`).join("")}</tr>`).join("")}</tbody>`;
@@ -1220,8 +1288,9 @@ function showRoute(name) {
   document.querySelectorAll("#rtable tbody tr").forEach(tr => tr.classList.toggle("sel", tr.dataset.r === name));
   let h = `<h2>${r.route} (${r.type})</h2><div class="muted small">${r.dests.join(" / ")}</div><p>${r.explain}</p>`;
   const d = r.m;
-  h += `<p class="small">Trips: ${d.judged} judged, ${d.dropped_n} dropped (${d.covered_n} covered), ${d.eff_n} effectively missed
-       (${d.eff_ran_n} of them ran). Bunching events: ${d.events}; ${pct(d.recovery)} spaced out again; ${pct(d.tried_share)} had an
+  h += `<p class="small">Trips: ${d.judged} judged, ${d.dropped_n} dropped (${d.covered_n} covered). Effectively missed: about
+       ${d.eff_n} buses (${pct(d.eff, 1)})${d.consistent === false ? ` <span class="bad">— check failed: implies waits at least
+       ${d.implied_ratio.toFixed(2)}× scheduled, measured ${d.wait_ratio.toFixed(2)}×</span>` : ""}. Bunching events: ${d.events}; ${pct(d.recovery)} spaced out again; ${pct(d.tried_share)} had an
        intervention (${d.holds} holds, ${d.shorts} short-turns, ${d.express_runs} express runs, ${d.extra} added trips).
        Departures on time at the start of the route: ${pct(r.dep_on)}. Buses reporting loads: ${pct(d.load_share)}.</p>`;
   if (r.chart) h += `<h3>Worst two hours: ${r.chart.title}</h3>${r.chart.svg}<div class="small muted">${r.chart.note}

@@ -770,9 +770,10 @@ function renderStats(shown, axisStops, axisDir, lenOf, s0, s1, trips, dests) {
       const judged = dr.ran + dr.dropped;
       dropped = judged ? `<span class="${dr.dropped / judged >= 0.05 ? "worse" : ""}">${dr.dropped} of ${judged}</span> (${Math.round(dr.dropped / judged * 100)}%)` +
         (dr.unknown ? `; ${dr.unknown} not judged` : "") : (dr.unknown ? `${dr.unknown} trips not judged yet` : "no trips scheduled");
-      if (judged && dr.effective !== null && dr.effective !== undefined)
-        effDropped = `<span class="${dr.effective / judged >= 0.05 ? "worse" : ""}">${dr.effective} of ${judged}</span> ` +
-          `(${Math.round(dr.effective / judged * 100)}%)`;
+      const of = dr.effective_slots || judged;
+      if (of && dr.effective !== null && dr.effective !== undefined)
+        effDropped = `<span class="${dr.effective / of >= 0.05 ? "worse" : ""}">${dr.effective} of ${of} scheduled</span> ` +
+          `(${Math.round(dr.effective / of * 100)}%)`;
     }
     // Effectively missed: dropped trips plus buses that came bunched right behind another.
     // Crowding: share of bus time (from buses reporting a load) at standing room only or full.
@@ -855,7 +856,7 @@ function renderStats(shown, axisStops, axisDir, lenOf, s0, s1, trips, dests) {
     ${data.mgmt ? row("Bunching events", "bunch") + row("Fix attempts", "attempts") + row("Distance to space out again", "recover") +
       row("Response time", "response") + row("Interventions seen", "actions") + row("Spacing at start of route", "deps") : ""}</tbody></table>
     <details><summary>How these are measured</summary><p>Buses per hour and gaps are measured where buses pass ${st.name}; change the stop in the Headways list.
-    Effectively missed counts the trips riders experienced as missing: those whose slot fell inside a gap between buses of about twice the scheduled interval or more, at 5+ stops in a row, whether no bus ran them or one ran far off schedule; each missing bus counts once. A dropped trip ID whose slot another bus covered isn’t counted. Effectively dropped trips, past 24 hours, is the same count over the last day, so it already includes dropped trips that left a gap.
+    Effectively missed counts the trips riders experienced as missing: those whose slot fell inside a gap between buses of about twice the scheduled interval or more, at 5+ stops in a row, whether no bus ran them or one ran far off schedule; each missing bus counts once. A dropped trip ID whose slot another bus covered isn’t counted. Effectively dropped trips, past 24 hours, counts long gaps at three mid-route stops over the last day: every gap of 1.75 times the scheduled interval or more is one bus riders lost, whatever the cause.
     ${hasSched ? "Run time compares each bus with its scheduled trip over the stretch it was tracked on." : "Add the schedule file to compare with scheduled service."}
     ${data.mgmt ? "Bunching means a bus arrived less than 30% of the usual gap behind the bus ahead; spaced out again means back above 60%. Response time runs from bunching to the first intervention involving either bus. Start-of-route spacing and on-time departures (1 min early to 5 min late) are measured at the third stop." : ""}</p></details>
     ${data.dropped24 && data.dropped24.note ? `<p>${data.dropped24.note}</p>` : ""}`;

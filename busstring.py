@@ -1516,6 +1516,45 @@ def effectively_missed_window(db, route, start, end):
     return out
 
 
+def mid_route_losses(live, sched, direction, bounds, start, end, watched=None):
+    """The simple effectively-missed count, used by the site and the report alike. At three
+    well-observed stops in the middle of the route (about 30%, 50% and 70% of the way along),
+    every gap of 1.75 times the scheduled interval at that time is one lost bus (2.75 times:
+    two, ...). Returns (lost buses, scheduled buses, buses that actually passed), each
+    averaged over the three stops, or None without enough data."""
+    n = len(bounds)
+    if n < 6:
+        return None
+    lv = [t for t in live if t["dir"] == direction]
+    sd = [st for st in sched if st["dir"] == direction]
+    lc = [crossings(t["pts"], bounds, max_gap=MAX_GAP_SECONDS) for t in lv]
+    sc = [crossings(st["pts"], bounds) for st in sd]
+    ok = well_seen([[v if v is not None and start <= v < end else None for v in c] for c in lc], n)
+    good = [k for k in range(n) if ok[k]]
+    if not good or not sd:
+        return None
+    checks = sorted({good[int(f * (len(good) - 1))] for f in (0.3, 0.5, 0.7)})
+    covered = (lambda a, c: True) if not watched else \
+        (lambda a, c: all(x in watched for x in range(int(a) // 600, int(c) // 600 + 1)))
+    lost = slots = seen = 0
+    for k in checks:
+        s_times = sorted(c[k] for c in sc if c[k] is not None)
+        a_times = sorted(c[k] for c in lc if c[k] is not None)
+        slots += sum(1 for t in s_times if start <= t < end and covered(t, t))
+        seen += sum(1 for t in a_times if start <= t < end and covered(t, t))
+        for a, c in zip(a_times, a_times[1:]):
+            g = c - a
+            if not start <= a < end or not 0 < g < 3 * 3600 or not covered(a, c):
+                continue
+            lo = max(0, bisect.bisect_right(s_times, a) - 1)
+            hi = bisect.bisect_left(s_times, c)
+            near = [y - x for x, y in zip(s_times[lo:hi + 1], s_times[lo + 1:hi + 2]) if 0 < y - x < 3 * 3600]
+            if near:
+                lost += max(0, int(g / statistics.median(near) + 0.25) - 1)
+    m = len(checks)
+    return lost / m, slots / m, seen / m
+
+
 def dropped_24h(db, route):
     """Scheduled trips in the past 24 hours (finished at least 10 minutes ago)
     by direction: how many ran, how many had no bus, how many couldn't be judged."""
@@ -1528,10 +1567,13 @@ def dropped_24h(db, route):
         return None
     out = {"note": note}
     live = clean(raw_positions(db, route, now - 86400 - 7200, now))
+    watched = {k for (k,) in db.execute("SELECT bucket FROM heartbeat WHERE bucket >= ?", ((now - 86400) // 600,))}
     for direction in (0, 1):
         counts = {"ran": 0, "dropped": 0, "unknown": 0}
         bounds = [st["dist"] for st in stop_list(db, route, direction)]
-        counts["effective"] = effectively_dropped(live, trips, direction, bounds, now - 86400, now)
+        res = mid_route_losses(live, trips, direction, bounds, now - 86400, now, watched or None)
+        counts["effective"] = round(res[0]) if res else None
+        counts["effective_slots"] = round(res[1]) if res else None
         for t in trips:
             if t["dir"] != direction or t["start"] < now - 86400 or t["end"] > now - 600:
                 continue
