@@ -206,7 +206,8 @@ def summarize_route_day(db, route, day, watched_all):
                 continue
             add(ta, "sp_dist", c - a)
             add(ta, "sp_time", tc - ta)
-            st = by_id.get(tr["trip"]) or by_id.get(b.strip_agency(tr["trip"]))
+            st = next((by_id[x] for tid in tr.get("trips", [tr["trip"]]) for x in (tid, b.strip_agency(tid))
+                       if x in by_id), None)
             if st:
                 sa, scc = b.crossing_time(st["pts"], a), b.crossing_time(st["pts"], c)
                 if sa is not None and scc is not None and scc > sa:
@@ -450,7 +451,17 @@ def dep_on_time(rs):
 
 
 def worst_window(rs):
-    """(row, start hour) of the 2 hours with the largest excess wait for this route."""
+    """(excess, row, start hour) of the 2 hours with the largest excess wait for this route.
+    Infrequent routes have little waiting data in any two hours, so the bar for how much is
+    needed drops step by step until something qualifies."""
+    for need in (3600, 1200, 300):
+        found = worst_window_with(rs, need)
+        if found:
+            return found
+    return None
+
+
+def worst_window_with(rs, need):
     best = None
     for r in rs:
         hrs = {int(h): v for h, v in r["hours"].items()}
@@ -458,7 +469,7 @@ def worst_window(rs):
             v = [hrs.get(h), hrs.get(h + 1)]
             sa1 = sum(x["sa1"] for x in v if x); sa2 = sum(x["sa2"] for x in v if x)
             ss1 = sum(x["ss1"] for x in v if x); ss2 = sum(x["ss2"] for x in v if x)
-            if sa1 < 3600 or ss1 < 3600:            # need a decent amount of waiting time to judge
+            if sa1 < need or ss1 < need:            # need enough waiting time to judge
                 continue
             ex = sa2 / (2 * sa1) - ss2 / (2 * ss1)
             if best is None or ex > best[0]:
@@ -1032,7 +1043,9 @@ def html_report(args):
     if args.db:
         b.SCHEDULE_DB = args.schedule
         db = b.connect(args.db)
-        for r in ranked[:args.charts]:
+        targets = ranked[:args.charts] if args.charts else routes
+        print(f"Drawing stringlines for {len(targets)} routes.", flush=True)
+        for r in targets:
             ww = worst_window(by_route[r["route"]])
             if not ww:
                 continue
@@ -1178,10 +1191,17 @@ $("bars").innerHTML = per.map(([p, m]) => `<div class="bar"><div class="small ba
 // routes table, sortable
 let sortCol = 7, sortDir = -1;
 const worst = new Set(D.worst);
+// B1, B2, B3 ... B100, with B44+ (SBS) right after B44, and BM routes after the B routes.
+function routeCmp(a, b) {
+  const key = r => { const m = r.match(/^([A-Za-z]+)(\d+)(.*)$/); return m ? [m[1].toUpperCase(), +m[2], m[3]] : [r, 0, ""]; };
+  const [p, n, s] = key(a), [q, o, t] = key(b);
+  return p < q ? -1 : p > q ? 1 : n !== o ? n - o : s < t ? -1 : s > t ? 1 : 0;
+}
 function drawRoutes() {
   const head = $("rtable").tHead, body = $("rtable").tBodies[0];
   head.innerHTML = `<tr>${COLS.map((c, i) => `<th class="${c[2] === "l" ? "l" : ""} ${i === sortCol ? "sorted" : ""}" data-i="${i}">${c[0]}${i === sortCol ? (sortDir < 0 ? " ▼" : " ▲") : ""}</th>`).join("")}</tr>`;
   const items = D.routes.slice().sort((a, b) => {
+    if (sortCol === 0) return routeCmp(a.route, b.route) * sortDir;
     const x = COLS[sortCol][1](a), y = COLS[sortCol][1](b);
     if (x == null) return 1; if (y == null) return -1;
     return (x < y ? -1 : x > y ? 1 : 0) * sortDir;
@@ -1203,6 +1223,8 @@ function showRoute(name) {
        Departures on time at the start of the route: ${pct(r.dep_on)}. Buses reporting loads: ${pct(d.load_share)}.</p>`;
   if (r.chart) h += `<h3>Worst two hours: ${r.chart.title}</h3>${r.chart.svg}<div class="small muted">${r.chart.note}
        Blue: buses. Grey: schedule. Red dashes: dropped trips. Red dots: effectively missed.</div>`;
+  else h += `<p class="small muted">No stringline: not enough bus and schedule data in any two-hour stretch to compare
+       actual with scheduled waits.</p>`;
   el.innerHTML = h + `<h3>By time of day</h3><div class="wrap"><table id="dp"></table></div><h3>By day</h3><div class="wrap"><table id="dd"></table></div>`;
   rowsTable($("dp"), [["", null, "l"], ...MCOLS], Object.entries(r.periods), ([p, m]) => mrow(D.labels.period[p], m));
   rowsTable($("dd"), [["", null, "l"], ...MCOLS], Object.entries(r.days), ([dd, m]) => mrow(D.labels.day[dd], m));
@@ -1227,7 +1249,8 @@ def main():
     h.add_argument("--db", help="raw positions database, for stringlines of each route's worst two hours")
     h.add_argument("--schedule", default=os.path.join(HERE, "schedule.sqlite"))
     h.add_argument("--routes", default="all")
-    h.add_argument("--charts", type=int, default=20, help="how many of the worst routes get a stringline (default 20)")
+    h.add_argument("--charts", type=int, default=0, help="only draw stringlines for this many of the worst routes "
+                                                          "(default: every route)")
     h.add_argument("--title")
     h.add_argument("--out", default="bus-service-report.html")
     p = sub.add_parser("pdf", help="make the PDF report from a summaries file")

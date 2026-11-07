@@ -981,8 +981,13 @@ function loadLine(tr, ev, hitEl) {
 
 // The scheduled trip a live trip is running, matched on trip ID.
 function schedFor(tr) {
-  const id = tr.trip, short = id.includes("_") ? id.slice(id.indexOf("_") + 1) : id;
-  return (data.sched || []).find(st => st.trip === id || st.trip === short) || null;
+  // A bus's run can carry several trip IDs (the feed switches them); use the first that's scheduled.
+  for (const id of (tr.trips || [tr.trip])) {
+    const short = id.includes("_") ? id.slice(id.indexOf("_") + 1) : id;
+    const st = (data.sched || []).find(x => x.trip === id || x.trip === short);
+    if (st) return st;
+  }
+  return null;
 }
 
 // Tooltip next to the pointer, kept fully on screen: flips to the left of or above the

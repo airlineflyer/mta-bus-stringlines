@@ -394,34 +394,54 @@ def load_level(occupancy, load, capacity):
 
 
 def clean(rows):
-    """Group into strings and drop erroneous updates."""
-    groups = {}
+    """Build each bus's line, one per physical run, and drop erroneous updates.
+
+    Lines are built from the bus, not the trip ID: the MTA feed often switches a bus's trip
+    ID partway through a run, or reports two trip IDs at once. Going by trip ID would chop
+    one bus into pieces (making it vanish at stops) or double it up (making it look bunched
+    with itself). A new line starts only when the bus really starts a new run: it changes
+    route or direction, goes quiet for over 15 minutes, or jumps back toward the start.
+    Each line keeps every trip ID it reported, most-reported first."""
+    by_bus = {}
     for r in rows:
-        groups.setdefault((r[2], r[3]), []).append(r)
+        by_bus.setdefault(r[3], []).append(r)
     strings = []
-    for (trip, vehicle), pts in groups.items():
-        seg, occ, cnt, high, last_load = [], [], [], None, None
-        for r in pts:
-            ts, dist = r[4], r[5]
-            if seg and ts - seg[-1][0] > MAX_GAP_SECONDS:
-                strings.append((trip, vehicle, r[1], r[7], seg, occ, last_load, cnt))
-                seg, occ, cnt, high, last_load = [], [], [], None, None
-            if high is not None and dist < high - BACKSLIDE_METERS:
+    for vehicle, rs in by_bus.items():
+        rs.sort(key=lambda r: r[4])
+        cur = None
+        for r in rs:
+            route, d, ts, dist = r[0], r[1], r[4], r[5]
+            if (cur is None or route != cur["route"] or d != cur["dir"]
+                    or ts - cur["pts"][-1][0] > MAX_GAP_SECONDS
+                    or dist < cur["high"] - 1000):            # back near the start: a new run
+                if cur and len(cur["pts"]) >= 3:
+                    strings.append(cur)
+                cur = {"route": route, "dir": d, "vehicle": vehicle, "pts": [], "occ": [], "cnt": [],
+                       "high": dist, "load": None, "ids": {}, "dests": {}}
+            if dist < cur["high"] - BACKSLIDE_METERS:
                 continue                      # bus "jumped back": GPS noise
-            if seg and ts == seg[-1][0]:
+            if cur["pts"] and ts == cur["pts"][-1][0]:
                 continue
-            seg.append((ts, max(dist, high or dist)))
+            cur["pts"].append((ts, max(dist, cur["high"])))
+            cur["high"] = max(cur["high"], dist)
             extra = r[10:13] if len(r) > 12 else (None, None, None)
-            occ.append(load_level(*extra))
-            cnt.append(extra[1])
+            cur["occ"].append(load_level(*extra))
+            cur["cnt"].append(extra[1])
             if extra[0] or extra[1] is not None:
-                last_load = [extra[0], extra[1], extra[2]]
-            high = max(high or dist, dist)
-        strings.append((trip, vehicle, pts[0][1], pts[0][7], seg, occ, last_load, cnt))
-    return [{"trip": t, "vehicle": v.split("_", 1)[-1], "dir": d, "dest": dest, "pts": s,
-             "occ": o if any(x is not None for x in o) else None, "load": ll,
-             "cnt": c if any(x is not None for x in c) else None}
-            for t, v, d, dest, s, o, ll, c in strings if len(s) >= 3]
+                cur["load"] = [extra[0], extra[1], extra[2]]
+            cur["ids"][r[2]] = cur["ids"].get(r[2], 0) + 1
+            if r[7]:
+                cur["dests"][r[7]] = cur["dests"].get(r[7], 0) + 1
+        if cur and len(cur["pts"]) >= 3:
+            strings.append(cur)
+    out = []
+    for c in strings:
+        ids = sorted(c["ids"], key=lambda i: -c["ids"][i])
+        out.append({"trip": ids[0], "trips": ids, "vehicle": c["vehicle"].split("_", 1)[-1], "dir": c["dir"],
+                    "dest": max(c["dests"], key=c["dests"].get) if c["dests"] else "", "pts": c["pts"],
+                    "occ": c["occ"] if any(x is not None for x in c["occ"]) else None, "load": c["load"],
+                    "cnt": c["cnt"] if any(x is not None for x in c["cnt"]) else None})
+    return out
 
 
 # ---------------------------------------------------------------- schedule
@@ -870,7 +890,7 @@ def management(trips, direction, bounds, names, other_bounds=None, sched_ids=Non
                 joined.append([a, b])
         all_waits[i] = [(p[a][0], p[b][0], p[b][1]) for a, b in joined if p[b][0] - p[a][0] >= 90]
     for i, tr in enumerate(T):
-        p, st = tr["pts"], (status or {}).get((tr["trip"], tr["vehicle"]), {})
+        p, st = tr["pts"], (status or {}).get(tr["vehicle"], {})
         # Stationary pieces of a minute or more, joined into one wait when a bus stops, creeps
         # up a little (no more than 150 m in no more than 3 minutes: to the stop, or forward in
         # a queue) and stops again.
@@ -1068,7 +1088,7 @@ def management(trips, direction, bounds, names, other_bounds=None, sched_ids=Non
 
     # Sign changes mid-trip, e.g. to NOT IN SERVICE or DROP OFF ONLY.
     for i, tr in enumerate(T):
-        for t, new in (signs or {}).get((tr["trip"], tr["vehicle"]), []):
+        for t, new in (signs or {}).get(tr["vehicle"], []):
             if any(w in new.upper() for w in SIGN_WORDS) and tr["pts"][0][0] <= t <= tr["pts"][-1][0]:
                 actions.append((t, i, "sign", f"{label(i).lower()} changed its sign to “{new}”"))
                 markers.append({"type": "sign", "t": t, "dist": dist_at(tr["pts"], t), "trip": tr["trip"],
@@ -1138,7 +1158,7 @@ def management(trips, direction, bounds, names, other_bounds=None, sched_ids=Non
     extra = 0
     if full and extra_ok and sched_ids is not None:
         for i, tr in enumerate(T):
-            if tr["trip"] not in sched_ids and strip_agency(tr["trip"]) not in sched_ids:
+            if not any(tid in sched_ids or strip_agency(tid) in sched_ids for tid in tr.get("trips", [tr["trip"]])):
                 # The same bus just ended a trip short in the other direction: this is the
                 # second half of a short-turn, already counted there, not an added bus.
                 if other_bounds and any(
@@ -1291,8 +1311,8 @@ def management_for(db, route, start, end, sched, sched_note, checks=None):
     # off, so nothing gets a marker without a line to sit on.
     trips = trim_terminal_idle(db, route, clean(rows))
     status, signs, last_dest = {}, {}, {}
-    for r in rows:
-        key = (r[2], r[3].split("_", 1)[-1])
+    for r in sorted(rows, key=lambda r: (r[3], r[4])):     # each bus in time order
+        key = r[3].split("_", 1)[-1]
         if r[9]:
             status.setdefault(key, {})[r[4]] = r[9]
         if key in last_dest and r[7] and r[7] != last_dest[key]:
@@ -1346,8 +1366,9 @@ def effectively_missed_trips(trips, sched, direction, bounds, start, end, want_c
     # Each scheduled trip's own bus, if one ran it, by trip ID.
     own = {}
     for j, t in enumerate(live):
-        own.setdefault(t["trip"], j)
-        own.setdefault(strip_agency(t["trip"]), j)
+        for tid in t.get("trips", [t["trip"]]):
+            own.setdefault(tid, j)
+            own.setdefault(strip_agency(tid), j)
     hw_at, all_gaps = [], []
     for k in range(n):
         ts = sorted(c[k] for c in sc if c[k] is not None)
@@ -1552,7 +1573,7 @@ def attach_actual(db, route, sched, start, end):
     live = trim_terminal_idle(db, route, clean(raw_positions(db, route, start - 3 * 3600, end + 3 * 3600)))
     by_id = {}
     for tr in live:
-        for key in (tr["trip"], strip_agency(tr["trip"])):
+        for key in [x for tid in tr.get("trips", [tr["trip"]]) for x in (tid, strip_agency(tid))]:
             if key not in by_id or len(tr["pts"]) > len(by_id[key]["pts"]):
                 by_id[key] = tr
     last_stop = {d: (lambda st: st[-1]["dist"] if st else None)(stop_list(db, route, d)) for d in (0, 1)}
