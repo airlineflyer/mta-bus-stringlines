@@ -1731,22 +1731,25 @@ def trim_terminal_idle(db, route, trips):
         if hi - lo >= 3 and near(p[-1][1], ends):
             j = next((j for j in range(len(p) - 1, lo - 1, -1) if p[-1][1] - p[j][1] >= 30), lo - 1)
             hi = j + 2                          # keep the first point after it arrived
-        # A bus sitting still for 3+ minutes in the last ~1.2 km before the end of the line,
-        # and then (perhaps) jumping to the end much later, has almost certainly finished:
-        # the feed is still reporting its last position, or logged the final stop late. End
-        # the line where it stopped and drop the late jump.
+        # A bus sitting still for 5+ minutes in the last ~1.2 km before the end of the line
+        # (or just past it), and afterwards only creeping the rest of the way, has almost
+        # certainly finished: the feed is still reporting it on its trip during layover, or
+        # logged the final stop late. End the line where it stopped; drop the late creep.
         if hi - lo >= 3:
-            last = hi - 1
-            if last - 1 > lo and p[last][1] - p[last - 1][1] > 60:
-                last -= 1                       # a final jump to the end: look at the stall before it
-            k = last
-            while k - 1 >= lo and abs(p[k - 1][1] - p[last][1]) <= 60:
-                k -= 1
-            stall_at = p[last][1]
-            if (p[last][0] - p[k][0] >= 180 and k > lo
-                    and any(0 <= x - stall_at <= 1200 for x in ends)):
-                hi = k + 1                      # keep the point where it stopped
-
+            near_end = lambda d: any(-150 <= x - d <= 1200 for x in ends)
+            cut, i = None, lo
+            while i < hi - 1:
+                j = i
+                while j + 1 < hi and abs(p[j + 1][1] - p[i][1]) <= 60:
+                    j += 1
+                if j > i and p[j][0] - p[i][0] >= 300 and near_end(p[i][1]):
+                    # only counts if nothing after it is more than the last stretch to the end
+                    if all(near_end(q[1]) or q[1] >= p[i][1] for q in p[j + 1:hi]):
+                        cut = i
+                        break
+                i = j + 1
+            if cut is not None and cut > lo:
+                hi = cut + 1                    # keep the point where it stopped
         if hi - lo >= 2:
             tr["pts"] = p[lo:hi]
             if tr.get("occ"):
