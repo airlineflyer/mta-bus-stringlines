@@ -88,7 +88,7 @@ def summarize_route_day(db, route, day, watched_all):
     ok_span = (lambda a, c: True) if not watched_all else \
         (lambda a, c: all(k in watched_all for k in range(int(a) // 600, int(c) // 600 + 1)))
 
-    live = b.clean(b.raw_positions(db, route, lead, d1))
+    live = b.trim_terminal_idle(db, route, b.clean(b.raw_positions(db, route, lead, d1)))
     if not live:
         return []
     sched_wide, note = b.schedule_for(db, route, lead, d1)

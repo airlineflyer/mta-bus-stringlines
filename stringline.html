@@ -318,7 +318,12 @@ function draw() {
   const lenOf = d => (d === 0 ? L0 : L1) || Math.max(1, ...data.trips.filter(t => t.dir === d).flatMap(t => t.pts.map(p => p[1])));
   const pos = (dir, dist) => { const p = Math.min(1, Math.max(0, dist / lenOf(dir))); return dir === axisDir ? p : 1 - p; };
 
-  const dests = d => [...new Set(data.trips.filter(t => t.dir === d).map(t => t.dest))].slice(0, 2).join(" / ");
+  // Every destination in this direction (branches, Limited), most common first.
+  const dests = d => {
+    const n = {};
+    data.trips.filter(t => t.dir === d && t.dest).forEach(t => { n[t.dest] = (n[t.dest] || 0) + 1; });
+    return Object.keys(n).sort((a, b) => n[b] - n[a]).join(" / ");
+  };
   $("lg0").textContent = "Direction 0" + (dests(0) ? ` to ${dests(0)}` : "");
   $("lg1").textContent = "Direction 1" + (dests(1) ? ` to ${dests(1)}` : "");
   $("lg0").hidden = one && axisDir !== 0; $("lg1").hidden = one && axisDir !== 1;
@@ -761,8 +766,38 @@ function renderStats(shown, axisStops, axisDir, lenOf, s0, s1, trips, dests) {
 
     const pair = (sv, av, worse) => hasSched
       ? `${sv} scheduled, <span class="${worse ? "worse" : ""}">${av} actual</span>` : `${av} actual`;
-    const bphS = sched.length / hrs, bphA = actual.length / hrs;
-    const mS = median(gs), mA = median(ga), xS = gs.length ? Math.max(...gs) : null, xA = ga.length ? Math.max(...ga) : null;
+    // Buses per hour, typical wait and longest gap at the chosen stop. On routes running local
+    // and Limited buses under one number, each service separately: a Limited filling a local
+    // gap at a shared stop doesn't help riders at the local-only stops.
+    const rowsFor = (act, sch) => {
+      const a = gaps(act), s_ = gaps(sch);
+      const bS = sch.length / hrs, bA = act.length / hrs;
+      const mS = median(s_), mA = median(a), xS = s_.length ? Math.max(...s_) : null, xA = a.length ? Math.max(...a) : null;
+      return {
+        bph: pair(bS.toFixed(1), bA.toFixed(1), hasSched && bA < 0.85 * bS),
+        wait: mA === null ? "—" : pair(mS === null ? "—" : m(mS), m(mA), mS !== null && mA > 1.25 * mS),
+        gap: xA === null ? "—" : pair(xS === null ? "—" : m(xS), m(xA), xS !== null && xA > 1.5 * xS),
+      };
+    };
+    const isLtd = t => !!t.serves;
+    const mixed = new Set([...trips, ...(hasSched ? data.sched : [])].filter(t => t.dir === d).map(isLtd)).size > 1;
+    let svc;
+    if (!mixed) svc = rowsFor(actual, sched);
+    else {
+      const pick = (arr, ltd) => arr.filter(t => t.dir === d && isLtd(t) === ltd && stopsNear(t, d, refDist))
+        .map(t => crossing(t.pts, refDist)).filter(inWin).sort((a, b) => a - b);
+      const parts = [false, true].map(ltd => {
+        const act = pick(trips, ltd), sch = hasSched ? pick(data.sched, ltd) : [];
+        const label = ltd ? "Limited" : "Local";
+        if (!act.length && !sch.length) {
+          const none = `<div><b>${label}:</b> doesn’t stop here</div>`;
+          return { bph: none, wait: none, gap: none };
+        }
+        const r = rowsFor(act, sch);
+        return Object.fromEntries(Object.entries(r).map(([k, v]) => [k, `<div><b>${label}:</b> ${v}</div>`]));
+      });
+      svc = { bph: parts[0].bph + parts[1].bph, wait: parts[0].wait + parts[1].wait, gap: parts[0].gap + parts[1].gap };
+    }
     const dr = data.dropped24 && data.dropped24[String(d)];
     let dropped = "—", effDropped = "—";
     if (dr) {
@@ -839,9 +874,7 @@ function renderStats(shown, axisStops, axisDir, lenOf, s0, s1, trips, dests) {
     return {
       bunch, recover, response, actions, deps, attempts, eff, effDropped, crowd,
       head: dests(d) ? `To ${dests(d)}` : `Direction ${d}`,
-      bph: pair(bphS.toFixed(1), bphA.toFixed(1), hasSched && bphA < 0.85 * bphS),
-      wait: mA === null ? "—" : pair(mS === null ? "—" : m(mS), m(mA), mS !== null && mA > 1.25 * mS),
-      gap: xA === null ? "—" : pair(xS === null ? "—" : m(xS), m(xA), xS !== null && xA > 1.5 * xS),
+      bph: svc.bph, wait: svc.wait, gap: svc.gap,
       run, dropped,
     };
   });

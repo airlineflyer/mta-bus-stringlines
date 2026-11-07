@@ -622,7 +622,7 @@ def find_problems(db, route):
     if cached and time.time() - cached[0] < PROBLEM_CACHE_SECONDS:
         return cached[1]
     now = int(time.time())
-    trips = clean(raw_positions(db, route, now - 7 * 86400, now))
+    trips = trim_terminal_idle(db, route, clean(raw_positions(db, route, now - 7 * 86400, now)))
     mark_service(db, route, trips)
     watched = {b for (b,) in db.execute("SELECT bucket FROM heartbeat WHERE bucket >= ?",
                                         ((now - 7 * 86400) // 600,))}
@@ -1594,7 +1594,7 @@ def effectively_missed_window(db, route, start, end):
     sched, _ = schedule_for(db, route, lead, end)
     if not sched:
         return None
-    live = clean(raw_positions(db, route, lead, end))
+    live = trim_terminal_idle(db, route, clean(raw_positions(db, route, lead, end)))
     mark_service(db, route, live, sched)
     by_id = {}
     for st in sched:
@@ -1681,7 +1681,7 @@ def dropped_24h(db, route):
     if trips is None:
         return None
     out = {"note": note}
-    live = clean(raw_positions(db, route, now - 86400 - 7200, now))
+    live = trim_terminal_idle(db, route, clean(raw_positions(db, route, now - 86400 - 7200, now)))
     mark_service(db, route, live, trips or [])
     watched = {k for (k,) in db.execute("SELECT bucket FROM heartbeat WHERE bucket >= ?", ((now - 86400) // 600,))}
     for direction in (0, 1):
@@ -1700,8 +1700,9 @@ def dropped_24h(db, route):
 
 
 def trim_terminal_idle(db, route, trips):
-    """For drawing only: cut the flat stretch where a bus sits at a terminal with its trip
-    assigned, so each string starts when the bus pulls out and ends when it arrives. Any
+    """Cut the flat stretch where a bus sits at a terminal with its trip assigned, so each
+    string starts when the bus pulls out and ends when it arrives (used for drawing and for
+    the analysis, so idling and stale end-of-run positions don't count as running). Any
     variant's terminal counts (a short trip starting mid-route too), within 400 m; a bus
     stuck elsewhere still shows. A bus that hasn't moved at all yet is left off."""
     maps = live_mappers(db, route)
@@ -1730,6 +1731,22 @@ def trim_terminal_idle(db, route, trips):
         if hi - lo >= 3 and near(p[-1][1], ends):
             j = next((j for j in range(len(p) - 1, lo - 1, -1) if p[-1][1] - p[j][1] >= 30), lo - 1)
             hi = j + 2                          # keep the first point after it arrived
+        # A bus sitting still for 3+ minutes in the last ~1.2 km before the end of the line,
+        # and then (perhaps) jumping to the end much later, has almost certainly finished:
+        # the feed is still reporting its last position, or logged the final stop late. End
+        # the line where it stopped and drop the late jump.
+        if hi - lo >= 3:
+            last = hi - 1
+            if last - 1 > lo and p[last][1] - p[last - 1][1] > 60:
+                last -= 1                       # a final jump to the end: look at the stall before it
+            k = last
+            while k - 1 >= lo and abs(p[k - 1][1] - p[last][1]) <= 60:
+                k -= 1
+            stall_at = p[last][1]
+            if (p[last][0] - p[k][0] >= 180 and k > lo
+                    and any(0 <= x - stall_at <= 1200 for x in ends)):
+                hi = k + 1                      # keep the point where it stopped
+
         if hi - lo >= 2:
             tr["pts"] = p[lo:hi]
             if tr.get("occ"):
