@@ -55,7 +55,7 @@ FIELDS = [
     "sa1", "sa2", "ss1", "ss2", "wa_ok", "wa_n", "hw_n", "bunched_n", "long_n",
     "events", "judged", "resolved", "persisted", "passed", "tried", "tried_judged",
     "tried_fixed", "untried_judged", "untried_fixed",
-    "holds", "shorts", "express", "extra", "signs",
+    "holds", "shorts", "express", "extra",
     "rt_act", "rt_sched", "rt_n", "sp_dist", "sp_time",
     "crowd_known", "crowd_s", "gl_crowd", "gl_known", "gn_crowd", "gn_known",
     "buses", "buses_load", "lost", "slots", "seen",
@@ -94,6 +94,7 @@ def summarize_route_day(db, route, day, watched_all):
     sched_wide, note = b.schedule_for(db, route, lead, d1)
     sched_day, _ = b.schedule_for(db, route, d0, d1)
     sched_wide, sched_day = sched_wide or [], sched_day or []
+    b.mark_service(db, route, live, sched_wide)     # which stops each bus and trip serves
     mg = b.management_for(db, route, d0, d1, sched_day, note)
     by_id = {}
     for st in sched_wide:
@@ -138,9 +139,10 @@ def summarize_route_day(db, route, day, watched_all):
                 add(c["st"]["start"], "covered")
 
         # Waits: actual and scheduled gaps between buses at every stop.
-        lc = [b.crossings(t["pts"], bounds, max_gap=b.MAX_GAP_SECONDS) for t in trips]
-        seen_ok = b.well_seen([[v if v is not None and lead <= v < d1 else None for v in c] for c in lc], n)
-        sc = [b.crossings(st["pts"], bounds) for st in sd]
+        lc_all = [b.crossings(t["pts"], bounds, max_gap=b.MAX_GAP_SECONDS) for t in trips]
+        seen_ok = b.well_seen([[v if v is not None and lead <= v < d1 else None for v in c] for c in lc_all], n)
+        lc = [b.serving(c, t) for c, t in zip(lc_all, trips)]       # only at stops each bus serves
+        sc = [b.serving(b.crossings(st["pts"], bounds), st) for st in sd]
         mid = n // 2
         sched_hw_mid = []
         for k in range(n):
@@ -270,7 +272,7 @@ def summarize_route_day(db, route, day, watched_all):
                         add(t, "tried_fixed" if tried else "untried_fixed")
                 if e.get("response") is not None:
                     responses[hour_of(t)].append(round(e["response"]))
-            kinds = {"hold": "holds", "short": "shorts", "express": "express", "extra": "extra", "sign": "signs"}
+            kinds = {"hold": "holds", "short": "shorts", "express": "express", "extra": "extra"}
             for mk in m["markers"]:
                 if mk["type"] in kinds and in_day(mk["t"]):
                     add(mk["t"], kinds[mk["type"]])

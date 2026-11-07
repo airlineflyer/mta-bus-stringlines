@@ -578,7 +578,6 @@ function draw() {
     hold: ["H", "Hold", "Waited 2+ minutes at a stop while the route kept moving, to space out from the bus ahead, even out gaps, or because it was running early"],
     short: ["T", "Turned short", "Turned back before the end of the line, then ran the other direction"],
     express: ["E", "Express / drop-off only", "Ran much faster than usual over several stops"],
-    sign: ["S", "Sign change", "Changed its sign mid-trip, e.g. to DROP OFF ONLY"],
     pass: ["P", "Pass (planned or not)", "One bus clearly overtook another. Sometimes a dispatcher’s move to put the emptier bus in front, often just traffic, so it isn’t counted as an intervention"],
     extra: ["+", "Unscheduled trip", "A trip that isn’t in the schedule, possibly added to fill a gap"],
   };
@@ -587,7 +586,7 @@ function draw() {
   $("lgMk").innerHTML = Object.keys(MARKS).filter(k => drawnKinds.has(k))
     .map(k => `<span class="mk" title="${MARKS[k][2]}. Inferred from bus movements; hover over a marker for details."><i>${MARKS[k][0]}</i>${MARKS[k][1]}</span>`).join("");
   if (mg) {
-    const LETTER = { hold: "H", short: "T", express: "E", pass: "P", extra: "+", sign: "S" };
+    const LETTER = { hold: "H", short: "T", express: "E", pass: "P", extra: "+" };
     const gm = el("g", {}), placed = [];
     shown.forEach(d => ((mg[String(d)] || {}).markers || []).forEach(m => {
       let cx = x(m.t);
@@ -648,7 +647,7 @@ function draw() {
                  "stroke-dasharray": "4 4" }, ann);
     shown.forEach(d => {
       const refDist = (d === axisDir ? pRef : 1 - pRef) * lenOf(d);
-      const times = trips.filter(tr => tr.dir === d)
+      const times = trips.filter(tr => tr.dir === d && stopsNear(tr, d, refDist))
         .map(tr => crossing(tr.pts, refDist)).filter(t => t !== null).sort((a, b) => a - b);
       for (let i = 1; i < times.length; i++) {
         const hw = times[i] - times[i - 1];
@@ -729,8 +728,8 @@ function renderStats(shown, axisStops, axisDir, lenOf, s0, s1, trips, dests) {
   const cols = shown.map(d => {
     const refDist = (d === axisDir ? pRef : 1 - pRef) * lenOf(d);
     const inWin = t => t !== null && t >= data.start && t <= data.end;
-    const actual = trips.filter(t => t.dir === d).map(t => crossing(t.pts, refDist)).filter(inWin).sort((a, b) => a - b);
-    const sched = hasSched ? data.sched.filter(t => t.dir === d).map(t => crossing(t.pts, refDist)).filter(inWin).sort((a, b) => a - b) : [];
+    const actual = trips.filter(t => t.dir === d && stopsNear(t, d, refDist)).map(t => crossing(t.pts, refDist)).filter(inWin).sort((a, b) => a - b);
+    const sched = hasSched ? data.sched.filter(t => t.dir === d && stopsNear(t, d, refDist)).map(t => crossing(t.pts, refDist)).filter(inWin).sort((a, b) => a - b) : [];
     const gaps = arr => arr.slice(1).map((t, i) => t - arr[i]).filter(g => g < 3 * 3600);
     const ga = gaps(actual), gs = gaps(sched);
 
@@ -819,12 +818,12 @@ function renderStats(shown, axisStops, axisDir, lenOf, s0, s1, trips, dests) {
       if (ms.recover_dist !== null) recover = `${(ms.recover_dist / 1609.34).toFixed(1)} mi (median)`;
       if (ms.response !== null) response = `${m(ms.response)} after bunching (median)`;
       const parts = [[ms.holds, "hold"], [ms.short_turns, "short-turn"], [ms.express, "express run"],
-        [ms.signs, "sign change"], [ms.extra, "unscheduled trip"]]
+        [ms.extra, "unscheduled trip"]]
         .filter(([n]) => n).map(([n, w]) => `${n} ${w}${n === 1 ? "" : "s"}`);
       actions = parts.length ? parts.join(", ") : "none seen";
       // Fix attempts: did events with an intervention end better than those without?
       if (ms.events && ms.tried !== undefined) {     // older servers don't send this: leave the row out
-        const words = { hold: "hold", express: "express run", sign: "sign change", "short-turn": "short-turn", extra: "added bus" };
+        const words = { hold: "hold", express: "express run", "short-turn": "short-turn", extra: "added bus" };
         const kinds = Object.entries(ms.tried_kinds || {}).filter(([, n]) => n)
           .map(([k, n]) => `${n} ${words[k]}${n === 1 ? "" : "s"}`).join(", ");
         attempts = !ms.tried ? `none of ${ms.events} had an intervention` :
@@ -1007,6 +1006,17 @@ function moveTip(ev, content, isHtml) {
 function hideTipNow() { $("tip").style.display = "none"; }
 
 // Time a string first reaches distance D, interpolated between readings; null if it never crosses D.
+// Whether a bus or scheduled trip stops near this distance: Limited and other skip-stop
+// trips carry "serves" (one 1 or 0 per stop on the main stop list); others stop everywhere.
+function stopsNear(t, d, dist) {
+  if (!t.serves) return true;
+  const stops = (data.stops || {})[String(d)] || [];
+  if (!stops.length) return true;
+  let k = 0;
+  stops.forEach((s, i) => { if (Math.abs(s.dist - dist) < Math.abs(stops[k].dist - dist)) k = i; });
+  return t.serves[k] === "1";
+}
+
 function crossing(pts, D) {
   if (!pts.length || pts[0][1] > D || pts[pts.length - 1][1] < D) return null;
   for (let i = 1; i < pts.length; i++) {

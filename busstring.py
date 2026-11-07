@@ -417,7 +417,7 @@ def clean(rows):
                 if cur and len(cur["pts"]) >= 3:
                     strings.append(cur)
                 cur = {"route": route, "dir": d, "vehicle": vehicle, "pts": [], "occ": [], "cnt": [],
-                       "high": dist, "load": None, "ids": {}, "dests": {}}
+                       "high": dist, "load": None, "ids": {}, "dests": {}, "pats": {}}
             if dist < cur["high"] - BACKSLIDE_METERS:
                 continue                      # bus "jumped back": GPS noise
             if cur["pts"] and ts == cur["pts"][-1][0]:
@@ -430,6 +430,7 @@ def clean(rows):
             if extra[0] or extra[1] is not None:
                 cur["load"] = [extra[0], extra[1], extra[2]]
             cur["ids"][r[2]] = cur["ids"].get(r[2], 0) + 1
+            cur["pats"][r[6]] = cur["pats"].get(r[6], 0) + 1
             if r[7]:
                 cur["dests"][r[7]] = cur["dests"].get(r[7], 0) + 1
         if cur and len(cur["pts"]) >= 3:
@@ -439,6 +440,7 @@ def clean(rows):
         ids = sorted(c["ids"], key=lambda i: -c["ids"][i])
         out.append({"trip": ids[0], "trips": ids, "vehicle": c["vehicle"].split("_", 1)[-1], "dir": c["dir"],
                     "dest": max(c["dests"], key=c["dests"].get) if c["dests"] else "", "pts": c["pts"],
+                    "pattern": max(c["pats"], key=c["pats"].get) if c["pats"] else None,
                     "occ": c["occ"] if any(x is not None for x in c["occ"]) else None, "load": c["load"],
                     "cnt": c["cnt"] if any(x is not None for x in c["cnt"]) else None})
     return out
@@ -498,7 +500,7 @@ def schedule_for(db, route, start, end):
                 dists = pattern_dists[pid]
                 offs = [int(o) for o in offsets.split(",")]
                 pts = [[mid + t0 + o, dist] for o, dist in zip(offs, dists)]
-                trips.append({"trip": trip_id, "dir": direction, "dest": headsign,
+                trips.append({"trip": trip_id, "dir": direction, "dest": headsign, "pid": pid,
                               "start": mid + t0, "end": mid + t1, "pts": pts})
             d += timedelta(days=1)
     finally:
@@ -621,6 +623,7 @@ def find_problems(db, route):
         return cached[1]
     now = int(time.time())
     trips = clean(raw_positions(db, route, now - 7 * 86400, now))
+    mark_service(db, route, trips)
     watched = {b for (b,) in db.execute("SELECT bucket FROM heartbeat WHERE bucket >= ?",
                                         ((now - 7 * 86400) // 600,))}
     days_seen = {ny_local(p[0])[0] for tr in trips for p in tr["pts"][:1]}
@@ -636,10 +639,12 @@ def find_problems(db, route):
         for tr in trips:
             if tr["dir"] != direction:
                 continue
-            cs = crossings(tr["pts"], bounds)
+            cs = serving(crossings(tr["pts"], bounds), tr)     # gaps: only stops it serves
             for k, t in enumerate(cs):
                 if t is not None:
                     passes.setdefault(k, []).append(t)
+            if tr.get("serves"):
+                continue            # travel times: from buses that stop everywhere
             for k in range(len(bounds) - 1):
                 a, b = cs[k], cs[k + 1]
                 if a is not None and b is not None and b > a and bounds[k + 1] - bounds[k] >= 80:
@@ -796,7 +801,6 @@ def find_problems(db, route):
 
 BUNCHED = 0.3        # gap below this share of the usual gap = bunched
 RECOVERED = 0.6      # gap back above this share = spaced out again
-SIGN_WORDS = ("NOT IN SERVICE", "DROP OFF", "DROP-OFF", "LIMITED", "LTD", "EXPRESS", "NIS")
 
 
 def crossings(pts, bounds, max_gap=300):
@@ -818,6 +822,67 @@ def crossings(pts, bounds, max_gap=300):
         if t1 - t0 <= max_gap:
             out[k] = t0 + (dist - d0) / (d1 - d0) * (t1 - t0) if d1 > d0 else t0
     return out
+
+
+# ---------------------------------------------------------------- which stops each bus serves
+# Some routes run Limited (or other skip-stop) buses under the same route number. A bus only
+# counts at stops it serves: a Limited driving past a local stop doesn't help anyone waiting
+# there, and one overtaking a local isn't a pass or bunching. Each trip gets "serves": None
+# when it stops everywhere along its stretch, or a string of 1s and 0s, one per stop on the
+# route's main stop list, when it skips stops.
+
+def serve_string(main_ids, ids):
+    idx = [k for k, x in enumerate(main_ids) if x in ids]
+    if len(idx) < 2:
+        return None                                  # can't tell: treat as stopping everywhere
+    if len(idx) >= 0.85 * (idx[-1] - idx[0] + 1):
+        return None                                  # serves (nearly) every stop on its stretch
+    return "".join("1" if x in ids else "0" for x in main_ids)
+
+
+_serve_cache = {}
+
+
+def mark_service(db, route, trips=(), sched=()):
+    """Set "serves" on live trips (from their journey pattern's stops, as learned from the
+    feed) and scheduled trips (from the schedule's own stop list for the trip)."""
+    hit = _serve_cache.get(route)
+    if not hit or time.time() - hit[0] > 600:
+        info = {}
+        for direction in (0, 1):
+            main_ids = [bare_stop(s["id"]) for s in stop_list(db, route, direction)]
+            pats = {}
+            for pattern, stop_id in db.execute(
+                    "SELECT pattern, stop_id FROM stops WHERE route=? AND direction=?", (route, direction)):
+                pats.setdefault(pattern, set()).add(bare_stop(stop_id))
+            info[direction] = (main_ids, {p: serve_string(main_ids, ids) for p, ids in pats.items()}, {})
+        hit = (time.time(), info)
+        _serve_cache[route] = hit
+    info = hit[1]
+    for t in trips:
+        main = info.get(t["dir"])
+        t["serves"] = main[1].get(t.get("pattern")) if main else None
+    need = {st["pid"] for st in sched if st.get("pid") is not None and st["dir"] in info
+            and st["pid"] not in info[st["dir"]][2]}
+    if need and os.path.exists(SCHEDULE_DB):
+        sdb = sqlite3.connect(f"file:{SCHEDULE_DB}?mode=ro", uri=True)
+        try:
+            for st in sched:
+                pid, d = st.get("pid"), st["dir"]
+                if pid in need and d in info and pid not in info[d][2]:
+                    ids = {bare_stop(r[0]) for r in sdb.execute("SELECT stop_id FROM pattern_stops WHERE pid=?", (pid,))}
+                    info[d][2][pid] = serve_string(info[d][0], ids)
+        finally:
+            sdb.close()
+    for st in sched:
+        main = info.get(st["dir"])
+        st["serves"] = main[2].get(st.get("pid")) if main else None
+
+
+def serving(c, t):
+    """A trip's crossing times, with stops it doesn't serve blanked out."""
+    sv = t.get("serves")
+    return c if not sv else [v if k < len(sv) and sv[k] == "1" else None for k, v in enumerate(c)]
 
 
 def well_seen(cs, n, share=0.85):
@@ -844,9 +909,35 @@ def mins_txt(sec):
     return f"{max(0, round(sec / 60))} min"
 
 
-def management(trips, direction, bounds, names, other_bounds=None, sched_ids=None,
-               sched_ends=None, extra_ok=False, status=None, signs=None, full=True, checks=None,
-               sched_pts=None):
+def by_service(items):
+    """Split trips into services: buses that stop everywhere, and Limited/skip-stop buses."""
+    groups = {}
+    for x in items:
+        groups.setdefault(bool(x.get("serves")), []).append(x)
+    return groups
+
+
+def management(trips, direction, bounds, names, *args, **kwargs):
+    """Bunching events and interventions in one direction, analyzed separately for each
+    service on the route (local, Limited): bunching means two buses of the same service
+    running together, and a Limited catching up with a local is just the schedule."""
+    T = [t for t in trips if t["dir"] == direction]
+    groups = by_service(T)
+    if len(groups) <= 1:
+        return _management_one(trips, direction, bounds, names, *args, **kwargs)
+    out = None
+    for group in groups.values():
+        res = _management_one(group, direction, bounds, names, *args, **kwargs)
+        if res:
+            out = out or {"events": [], "markers": []}
+            out["events"] += res["events"]
+            out["markers"] += res["markers"]
+    return out
+
+
+def _management_one(trips, direction, bounds, names, other_bounds=None, sched_ids=None,
+                    sched_ends=None, extra_ok=False, status=None, signs=None, full=True, checks=None,
+                    sched_pts=None):
     """Bunching events in one direction, how each ended, and interventions around
     them. full=False skips the window-only extras (markers, passes, short-turns)."""
     T = [t for t in trips if t["dir"] == direction]
@@ -854,8 +945,9 @@ def management(trips, direction, bounds, names, other_bounds=None, sched_ids=Non
     if n < 5 or len(T) < 2:
         return None
     first, last = bounds[0], bounds[-1]
-    cs = [crossings(t["pts"], bounds) for t in T]
-    seen_ok = well_seen(cs, n)
+    cs_all = [crossings(t["pts"], bounds) for t in T]
+    seen_ok = well_seen(cs_all, n)                 # tracking coverage: every bus passing
+    cs = [serving(c, t) for c, t in zip(cs_all, T)]  # gaps: only at stops each bus serves
 
     # Usual gap at each stop, by time of day.
     per_stop, typ = [], {}
@@ -1060,7 +1152,9 @@ def management(trips, direction, bounds, names, other_bounds=None, sched_ids=Non
     # Express or drop-off-only running: 3+ stops much faster than usual.
     # Typical travel time between stops, by time of day (buses run much faster at night).
     seg_by = {}
-    for c in cs:
+    for c, t in zip(cs, T):
+        if t.get("serves"):
+            continue                    # typical times come from buses that stop everywhere
         for k in range(n - 1):
             if c[k] is not None and c[k + 1] is not None and c[k + 1] > c[k]:
                 seg_by.setdefault((k, period_of(ny_local(c[k])[1])), []).append(c[k + 1] - c[k])
@@ -1069,6 +1163,8 @@ def management(trips, direction, bounds, names, other_bounds=None, sched_ids=Non
     def seg_usual(k, t):
         return seg_typ.get((k, period_of(ny_local(t)[1])))
     for i, c in enumerate(cs):
+        if T[i].get("serves"):
+            continue        # Limited and other skip-stop buses run fast past stops by design
         k = 0
         while k < n - 1:
             run_end, saved = k, 0.0
@@ -1099,13 +1195,8 @@ def management(trips, direction, bounds, names, other_bounds=None, sched_ids=Non
             else:
                 k += 1
 
-    # Sign changes mid-trip, e.g. to NOT IN SERVICE or DROP OFF ONLY.
-    for i, tr in enumerate(T):
-        for t, new in (signs or {}).get(tr["vehicle"], []):
-            if any(w in new.upper() for w in SIGN_WORDS) and tr["pts"][0][0] <= t <= tr["pts"][-1][0]:
-                actions.append((t, i, "sign", f"{label(i).lower()} changed its sign to “{new}”"))
-                markers.append({"type": "sign", "t": t, "dist": dist_at(tr["pts"], t), "trip": tr["trip"],
-                                "text": f"{label(i)} changed its sign to “{new}” partway through the trip."})
+    # No sign changes: the feed's destination is the scheduled headsign of whatever trip the
+    # bus is assigned to, not the physical sign, so it can't show a driver changing the sign.
 
     # Passes: follow each pair of buses along the route. A pass is when one was clearly
     # ahead (30+ seconds) at some stop and the other is clearly ahead at a later stop,
@@ -1116,6 +1207,8 @@ def management(trips, direction, bounds, names, other_bounds=None, sched_ids=Non
     if full:
         for ia in range(len(T)):
             for ib in range(ia + 1, len(T)):
+                if bool(T[ia].get("serves")) != bool(T[ib].get("serves")):
+                    continue    # a Limited overtaking a local is ordinary service, not a pass
                 common = [k for k in range(n) if cs[ia][k] is not None and cs[ib][k] is not None]
                 if len(common) < 2:
                     continue
@@ -1283,9 +1376,9 @@ def mgmt_stats(events, markers):
         "untried_judged": sum(not e["tried"] for e in judged),
         "untried_fixed": sum(not e["tried"] for e in resolved),
         "tried_kinds": {kind: sum(kind in e["tried"] for e in events)
-                        for kind in ("hold", "express", "sign", "short-turn", "extra")},
+                        for kind in ("hold", "express", "short-turn", "extra")},
         "holds": count("hold"), "express": count("express"), "passes": count("pass"),
-        "short_turns": count("short"), "extra": count("extra"), "signs": count("sign"),
+        "short_turns": count("short"), "extra": count("extra"),
     }
 
 
@@ -1294,11 +1387,13 @@ def departures(trips, direction, bounds, sched, start, end):
     if len(bounds) < 5:
         return None
     D = bounds[2]
-    actual = sorted(t for t in (crossing_time(tr["pts"], D) for tr in trips if tr["dir"] == direction)
+    stops_at = lambda x: not x.get("serves") or (len(x["serves"]) > 2 and x["serves"][2] == "1")
+    actual = sorted(t for t in (crossing_time(tr["pts"], D) for tr in trips
+                                if tr["dir"] == direction and stops_at(tr))
                     if t is not None and start <= t <= end)
     planned = {}
     for st in sched or []:
-        if st["dir"] == direction:
+        if st["dir"] == direction and stops_at(st):
             t = crossing_time(st["pts"], D)
             if t is not None:
                 planned[st["trip"]] = t
@@ -1325,15 +1420,11 @@ def management_for(db, route, start, end, sched, sched_note, checks=None):
     # Same view as the chart: idling at terminals trimmed, buses that haven't pulled out left
     # off, so nothing gets a marker without a line to sit on.
     trips = trim_terminal_idle(db, route, clean(rows))
-    status, signs, last_dest = {}, {}, {}
-    for r in sorted(rows, key=lambda r: (r[3], r[4])):     # each bus in time order
-        key = r[3].split("_", 1)[-1]
+    mark_service(db, route, trips, sched or [])
+    status = {}
+    for r in rows:
         if r[9]:
-            status.setdefault(key, {})[r[4]] = r[9]
-        if key in last_dest and r[7] and r[7] != last_dest[key]:
-            signs.setdefault(key, []).append((r[4], r[7]))
-        if r[7]:
-            last_dest[key] = r[7]
+            status.setdefault(r[3].split("_", 1)[-1], {})[r[4]] = r[9]
     sched_ids = sched_ends = sched_pts = None
     extra_ok = False
     if sched is not None:
@@ -1347,7 +1438,7 @@ def management_for(db, route, start, end, sched, sched_note, checks=None):
         other = stop_list(db, route, 1 - direction)
         bounds = [s["dist"] for s in stops]
         res = management(trips, direction, bounds, [s["name"] for s in stops],
-                         [s["dist"] for s in other] or None, sched_ids, sched_ends, extra_ok, status, signs,
+                         [s["dist"] for s in other] or None, sched_ids, sched_ends, extra_ok, status, None,
                          checks=checks, sched_pts=sched_pts)
         if res:
             res["markers"] = [m for m in res["markers"] if start <= m["t"] <= end]
@@ -1362,6 +1453,23 @@ _dropped_cache = {}
 
 
 def effectively_missed_trips(trips, sched, direction, bounds, start, end, want_covered=None):
+    """Per service (local, Limited): a missing local is a lost local trip, whatever Limiteds
+    went by. See _effectively_missed_one for how slots are judged."""
+    live = by_service([t for t in trips if t["dir"] == direction])
+    sch = by_service([st for st in sched if st["dir"] == direction])
+    if len(set(live) | set(sch)) <= 1:
+        return _effectively_missed_one(trips, sched, direction, bounds, start, end, want_covered)
+    out = None
+    for key in set(live) | set(sch):
+        if not live.get(key) or not sch.get(key):
+            continue
+        res = _effectively_missed_one(live[key], sch[key], direction, bounds, start, end, want_covered)
+        if res is not None:
+            out = (out or []) + res
+    return out
+
+
+def _effectively_missed_one(trips, sched, direction, bounds, start, end, want_covered=None):
     """Scheduled trips in one direction that ran, but whose slot riders saw as a long empty
     wait: at each stop, a gap between buses of 1.75-2.75 times the scheduled interval means
     riders effectively lost one bus (2.75-3.75 times: two, ...), charged to the scheduled
@@ -1376,8 +1484,9 @@ def effectively_missed_trips(trips, sched, direction, bounds, start, end, want_c
     keep = lambda v: v if v is not None and start <= v <= end else None
     # A bus that goes quiet (no position reports) and reappears further along within 15
     # minutes did pass the stops in between: don't let reporting dropouts look like gaps.
-    lc = [[keep(v) for v in crossings(t["pts"], bounds, max_gap=MAX_GAP_SECONDS)] for t in live]
-    sc = [[keep(v) for v in crossings(t["pts"], bounds)] for t in sch]
+    lc_all = [[keep(v) for v in crossings(t["pts"], bounds, max_gap=MAX_GAP_SECONDS)] for t in live]
+    lc = [serving(c, t) for c, t in zip(lc_all, live)]            # only at stops each bus serves
+    sc = [serving([keep(v) for v in crossings(t["pts"], bounds)], t) for t in sch]
     # Each scheduled trip's own bus, if one ran it, by trip ID.
     own = {}
     for j, t in enumerate(live):
@@ -1398,7 +1507,11 @@ def effectively_missed_trips(trips, sched, direction, bounds, start, end, want_c
     # gap can change partway along; charging per stop would then count one lost bus two or
     # three times. Each event counts once (or once per bus lost, for very long gaps).
     events = {}                     # (bus before, bus after) -> [(k, lost, gap, hw, [slots, deepest first])]
-    seen_ok = well_seen(lc, n)
+    seen_ok = well_seen(lc_all, n)             # tracking coverage: every bus passing, served or not
+    # Stops this service is judged at, in order: a "run" of stops is consecutive stops here
+    # (every stop for local buses; only the stops a Limited serves, for Limiteds).
+    judged_at = [k for k in range(n) if seen_ok[k] and any(c[k] is not None for c in lc)]
+    pos = {k: i for i, k in enumerate(judged_at)}
     for k in range(n):
         if not seen_ok[k]:
             continue                # too few buses seen here to trust the gaps
@@ -1429,7 +1542,7 @@ def effectively_missed_trips(trips, sched, direction, bounds, start, end, want_c
         # split into stretches of consecutive stops
         stretch = []
         for item in runs + [None]:
-            if item is not None and (not stretch or item[0] == stretch[-1][0] + 1):
+            if item is not None and (not stretch or pos.get(item[0], -9) == pos.get(stretch[-1][0], -9) + 1):
                 stretch.append(item)
                 continue
             if len(stretch) >= 5:
@@ -1482,6 +1595,7 @@ def effectively_missed_window(db, route, start, end):
     if not sched:
         return None
     live = clean(raw_positions(db, route, lead, end))
+    mark_service(db, route, live, sched)
     by_id = {}
     for st in sched:
         by_id[st["trip"]] = st
@@ -1527,9 +1641,10 @@ def mid_route_losses(live, sched, direction, bounds, start, end, watched=None):
         return None
     lv = [t for t in live if t["dir"] == direction]
     sd = [st for st in sched if st["dir"] == direction]
-    lc = [crossings(t["pts"], bounds, max_gap=MAX_GAP_SECONDS) for t in lv]
-    sc = [crossings(st["pts"], bounds) for st in sd]
-    ok = well_seen([[v if v is not None and start <= v < end else None for v in c] for c in lc], n)
+    lc_all = [crossings(t["pts"], bounds, max_gap=MAX_GAP_SECONDS) for t in lv]
+    lc = [serving(c, t) for c, t in zip(lc_all, lv)]              # only at stops each bus serves
+    sc = [serving(crossings(st["pts"], bounds), st) for st in sd]
+    ok = well_seen([[v if v is not None and start <= v < end else None for v in c] for c in lc_all], n)
     good = [k for k in range(n) if ok[k]]
     if not good or not sd:
         return None
@@ -1567,6 +1682,7 @@ def dropped_24h(db, route):
         return None
     out = {"note": note}
     live = clean(raw_positions(db, route, now - 86400 - 7200, now))
+    mark_service(db, route, live, trips or [])
     watched = {k for (k,) in db.execute("SELECT bucket FROM heartbeat WHERE bucket >= ?", ((now - 86400) // 600,))}
     for direction in (0, 1):
         counts = {"ran": 0, "dropped": 0, "unknown": 0}
@@ -1657,10 +1773,12 @@ def stringline(db, route, end, hours, problems=False, mgmt=False):
     start = end - int(hours * 3600)
     sched, note = schedule_for(db, route, start, end)
     attach_actual(db, route, sched, start, end)
+    trips = trim_terminal_idle(db, route, clean(raw_positions(db, route, start, end)))
+    mark_service(db, route, trips, sched or [])
     return {
         "route": route, "start": start, "end": end,
         "stops": {str(d): stop_list(db, route, d) for d in (0, 1)},
-        "trips": trim_terminal_idle(db, route, clean(raw_positions(db, route, start, end))),
+        "trips": trips,
         "has_schedule": sched is not None,
         "sched": sched or [],
         "sched_note": note,

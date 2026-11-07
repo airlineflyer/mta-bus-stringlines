@@ -8,7 +8,7 @@ A stringline is a time-and-distance chart: time runs left to right, stops run to
 
 - **Stringlines for every route**, either direction, over any window up to 12 hours in the last few days.
 - **The schedule** behind the live buses, with dropped trips (dashed red) and *effectively missed* trips (dotted red): trips whose slot riders experienced as a long empty wait, whether no bus ran them or one ran far off schedule.
-- **Interventions inferred from bus movements:** holds (H), short-turns (T), express or drop-off-only running (E), sign changes (S), unscheduled trips (+), plus passes (P). Purple shading follows a bus while it runs bunched behind the one ahead.
+- **Interventions inferred from bus movements:** holds (H), short-turns (T), express or drop-off-only running (E), unscheduled trips (+), plus passes (P). Purple shading follows a bus while it runs bunched behind the one ahead.
 - **Passenger loading** (green, yellow, red) on buses that report it.
 - **Bus lanes** along the route, shaded only while each lane is in effect.
 - **Route stats** for the window: buses per hour and gaps against the schedule, run times, effectively missed and dropped trips, bunching events and how they ended, crowding.
