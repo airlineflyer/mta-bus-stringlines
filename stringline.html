@@ -493,7 +493,7 @@ function draw() {
       const line = el("path", isMissing
         ? { d, stroke: "var(--miss)", "stroke-width": 1.6, "stroke-dasharray": "5 4" }
         : { d, stroke: st.dir === 0 ? "var(--dir0)" : "var(--dir1)", "stroke-width": 1, opacity: 0.3 }, gs);
-      const hit = el("path", { d, stroke: "transparent", "stroke-width": 8, style: "pointer-events:stroke" }, gs);
+      const hit = el("path", { d, stroke: "transparent", "stroke-width": 8, style: "pointer-events:stroke", "data-tip": 1 }, gs);
       let status = st.ran === true ? "Ran" : st.ran === false ? "No bus seen" : "Not judged yet";
       if (st.ran === false) {
         const ef = effFor(st), mm = sec => Math.round(Math.abs(sec) / 60);
@@ -538,7 +538,7 @@ function draw() {
         const seg = t.pts.filter(p => p[0] >= e.t0 - 15 && p[0] <= e.t1 + 15);
         if (seg.length < 2) return;
         const path = el("path", { d: seg.map((p, i) => (i ? "L" : "M") + x(p[0]).toFixed(1) + "," + y(pos(d, p[1])).toFixed(1)).join(""),
-                                  style: "pointer-events:stroke" }, gb);
+                                  style: "pointer-events:stroke", "data-tip": 1 }, gb);
         path.addEventListener("mousemove", ev => showTip(ev, e.text));
         path.addEventListener("mouseleave", hideTip);
       });
@@ -569,7 +569,7 @@ function draw() {
         i = j;
       }
     }
-    const hit = el("path", { d, stroke: "transparent", "stroke-width": 8, style: "pointer-events:stroke" }, g);
+    const hit = el("path", { d, stroke: "transparent", "stroke-width": 8, style: "pointer-events:stroke", "data-tip": 1 }, g);
     hit.addEventListener("mousemove", ev => {
       path.setAttribute("stroke-width", 3.5);
       moveTip(ev, `Bus ${tr.vehicle} to ${tr.dest || "?"}<br>${fmtTime.format(new Date(tr.pts[0][0] * 1000))}–` +
@@ -602,7 +602,7 @@ function draw() {
       if (m.type === "express" && m.t1)
         el("line", { x1: x0, y1: cy, x2: x(m.t1), y2: y(pos(d, m.dist1)), stroke: "var(--ink)",
                      "stroke-width": 3, "stroke-dasharray": "2 3", opacity: 0.55 }, gm);
-      const grp = el("g", {}, gm);
+      const grp = el("g", { "data-tip": 1 }, gm);
       el("circle", { cx, cy, r: 7, fill: "var(--ink)", stroke: "var(--bg)", "stroke-width": 1.5 }, grp);
       const t = el("text", { x: cx, y: cy + 3.2, "text-anchor": "middle", "font-size": 9, "font-weight": 700,
                              fill: "var(--bg)" }, grp);
@@ -695,7 +695,7 @@ function draw() {
         const dPath = st.pts.map((p, i) => (i ? "L" : "M") + x(p[0]).toFixed(1) + "," + y(pos(d, p[1])).toFixed(1)).join("");
         el("path", { d: dPath, stroke: "var(--miss)", "stroke-width": 2, "stroke-dasharray": "1.5 4",
                      "stroke-linecap": "round" }, ge);
-        const hitPath = el("path", { d: dPath, stroke: "transparent", "stroke-width": 8, style: "pointer-events:stroke" }, ge);
+        const hitPath = el("path", { d: dPath, stroke: "transparent", "stroke-width": 8, style: "pointer-events:stroke", "data-tip": 1 }, ge);
         const where = m.from === m.to ? `at ${m.from}` : `from ${m.from} to ${m.to}`;
         let txt = `Scheduled ${fmtTime.format(new Date(st.start * 1000))} trip: effectively missed. Riders ${where} ` +
           `waited up to ${Math.round(m.gap / 60)} min between buses (scheduled every ${Math.round(m.hw / 60)} min), ` +
@@ -1037,6 +1037,18 @@ function moveTip(ev, content, isHtml) {
   tip.style.top = Math.max(pad, top) + "px";
 }
 function hideTipNow() { $("tip").style.display = "none"; }
+
+// On touchscreens the pointer never "leaves" a line, so tapping anywhere that isn't a line
+// or marker (empty chart space, labels, the rest of the page) closes the tooltip. Scrolling
+// does too, since the tooltip would otherwise stay put while the chart moves under it.
+document.addEventListener("pointerdown", ev => {
+  if (!(ev.target.closest && ev.target.closest("[data-tip]"))) hideTipNow();
+}, { passive: true });
+window.addEventListener("scroll", hideTipNow, { passive: true });
+document.addEventListener("DOMContentLoaded", () => {
+  const c = document.getElementById("chart");
+  if (c) c.addEventListener("scroll", hideTipNow, { passive: true });
+});
 
 // Time a string first reaches distance D, interpolated between readings; null if it never crosses D.
 // Whether a bus or scheduled trip stops near this distance: Limited and other skip-stop
